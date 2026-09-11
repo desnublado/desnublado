@@ -1,0 +1,1792 @@
+#!/usr/bin/env bash
+
+# desnublado - A minimal microBKP implementation to run on device.
+# Created by solyplaya and released into the Public Domain. See footer for details.
+
+set -o nounset
+
+readonly version="2026.09.11"
+
+if [ -d "$HOME/storage/shared/DCIM" ]; then
+    # termux
+    base_path="$HOME/storage/shared/DCIM"
+elif [ -d "/mnt/shared/DCIM" ]; then
+    # linux virtual machine
+    base_path="/mnt/shared/DCIM"
+else
+    # generic
+    command -v xdg-user-dir > /dev/null && base_path="$(xdg-user-dir PICTURES)" || base_path="$HOME/Pictures"
+fi
+
+src="${DNBL_SRC:-$base_path/Camera}"
+src_done="${DNBL_SRC_DONE:-$base_path/Camera_done}"
+src_extra="${DNBL_SRC_EXTRA:-$base_path/Camera_extra}"
+src_extra_done="${DNBL_SRC_EXTRA_DONE:-}"
+src_extra_dst="${DNBL_SRC_EXTRA_DST:-}"
+src_import="${DNBL_SRC_IMPORT:-$base_path/Camera_import}"
+dst="${DNBL_DST:-$base_path/Camera_mini}"
+tmp="${DNBL_TMP:-${TMPDIR:-$HOME}}"
+lock_file="${DNBL_LOCK_FILE:-$HOME/.config/desnublado/.desnublado.lock}"
+rebuild_flag="${DNBL_REBUILD_FLAG:-$base_path/desnublado.rebuild}"
+db="${DNBL_DB:-$HOME/.config/desnublado/desnublado.db}"
+min_free_mb="${DNBL_MIN_FREE_MB:-2048}" # target filesystem must have this free space to proceed (in megabytes)
+ffmpeg_params=(-vf scale=640:640:force_original_aspect_ratio=decrease:force_divisible_by=2 -c:v libsvtav1 -crf 41 -preset 2 -c:a libopus -b:a 64k)
+magick_params=(-resize @900000\>)
+date_rename="${DNBL_DATE_RENAME:-true}"
+do_scroll="${DNBL_DO_SCROLL:-false}"
+move_sources="${DNBL_MOVE_SOURCES:-true}"
+force_overwrite="${DNBL_FORCE_OVERWRITE:-false}"
+show_full_path="${DNBL_SHOW_FULL_PATH:-false}"
+allow_dupes="${DNBL_ALLOW_DUPES:-false}" # false implies using sqlite3 database
+override_file="${DNBL_OVERRIDE_FILE:-$HOME/.config/desnublado/desnublado.override}"
+ext_list="${DNBL_EXT_LIST:-mp4 mkv jpg avif}"
+
+# non configurable globals
+hasher="xxh128sum"
+source_hash=""
+convert_return_code=0
+sys_tz=""
+allow_dynamic="false"
+ext_params=()
+
+# installation globals
+download_mirrors=(
+    "https://desnublado.com"
+    "https://codeberg.org/desnublado/desnublado/raw/branch/main"
+    "https://raw.githubusercontent.com/desnublado/desnublado/refs/heads/main/"
+)
+interactive="true"
+
+# multilingual support based on LANG env
+lang=""
+lang_list=("en" "es")
+
+# shellcheck disable=SC2034
+declare -A msg_en=(
+    [aborted]="Execution aborted..."
+    [allow_dupes]="Allow duplicate content files? (same photo/video with different file name)"
+    [already_running]="Desnublado is already running. Exiting..."
+    [ask_autostart]="Add this program to .bashrc so it starts automatically when you start %s? This is the recommended option if you installed %s only to use this program."
+    [calc_hash_error]="Cannot compute file hash!"
+    [closing_in_seconds]="Closing in %s seconds"
+    [computing_hash]="Computing file hash..."
+    [continue_no_install]="Continue without installation"
+    [conversion_error]="Conversion error!"
+    [conversion_errors]="Errors: %s"
+    [converting_img]="Converting image..."
+    [date_rename]="Reorganize converted media into year/month folders and rename to datetime names? i.e. 2020/01/20200123_012345_123.jpg"
+    [default_setting]="(Default)"
+    [disable]="Disable"
+    [done]="Done!"
+    [done]="Installation is completed!"
+    [done_termux]="You can type \"exit\" now. The next time you open %s it will start creating small versions of your photos and videos."
+    [do_scroll]="Keep scrollable history of processed files? When disabled history is limited to what fits in the screen."
+    [download_error]="Error downloading!"
+    [downloading_ffmpeg]="Downloading ffmpeg..."
+    [dst_not_exist]="Destination directory does not exist or is not writable:\n${dst}"
+    [enable]="Enable"
+    [error_checking_remote_file]="Error checking remote file! Is there a network connection?"
+    [error_invalid_signature]="The downloaded version has no valid signature. Not updating!"
+    [exiftool_missing]="exiftool program is required to copy GPS and date metadata!"
+    [ffmpeg_missing]="ffmpeg program is required to process video files!"
+    [file_deleted]="File deleted!"
+    [file_no_meta_hash]="File has no source hash meta..."
+    [file_repeated]="Repeated file!"
+    [import_error]="Import error, cannot move file!"
+    [installing_packages]="Installing required packages..."
+    [install_packages]="Install packages"
+    [install_required_packages]="Install required packages? (curl, exiftool, ffmpeg, imagemagick, sqlite3, xxhash, xz-utils)"
+    [invalid_option]="Invalid option! Please try again."
+    [iterating]="\033[1m%s: %d files\033[0m"
+    [low_space]="Low disk space: %'dM"
+    [magic_missing]="magick (from imagemagick) is required to convert images!"
+    [move_sources]="Move converted media to Camera_done folder?"
+    [move_src_error]="Cannot move source file to done folder!"
+    [move_tmp_error]="Cannot move tmp file to target!"
+    [no_new_version_available]="You are up to date!"
+    [no_ssh_keygen]="ssh-keygen is required to validate the digital signature of desnublado updates!"
+    [no_sudo_command]="No sudo command available!"
+    [not_a_valid_option]="Not a valid option"
+    [not_a_valid_value]="Not a valid value"
+    [processed]="Processed: %s"
+    [rebuilding_database]="Rebuilding database..."
+    [select_language]="Select language"
+    [show_full_path]="Show the full path of all files instead of their relative path to their origin and target folders?"
+    [skip_existing_target]="Skipping already converted file..."
+    [skipped]="Skipped: %s"
+    [sqlite_create_error]="sqlite3 database creation error!"
+    [sqlite_missing]="sqlite3 binary is required to use DB functionality!"
+    [sqlite_query_error]="sqlite3 database query error!: %s"
+    [src_done_not_exist]="Processed sources directory does not exist or is not writable:\n${src_done}"
+    [src_extra_done_not_exist]="Processed extra sources directory does not exist or is not writable:\n${src_extra_done}"
+    [src_extra_dst]="Extra sources destination directory does not exist or is not writable:\n${src_extra_dst}"
+    [src_not_exist]="Source directory does not exist:\n${src}"
+    [starting_in_seconds]="Starting in %s seconds"
+    [termux_storage_info]="This program needs access to your DCIM folder in order to process photos and videos."
+    [tmp_not_writable]="Temp directory does not exist or is not writable:\n${tmp}"
+    [unknown_command]="Unknown command"
+    [unsupported_distro]="Unsupported distro! You need to install the following required packages manually: curl, exiftool, ffmpeg, imagemagick, sqlite3, ssh-keygen, xxhash, xz-utils"
+    [updating_to_new_version]="Updating to new version: %s"
+    [video_eta]="%s.%ss of %ss (%s%%) eta: %s"
+    [welcome]="Welcome to the installer of desnublado\n\nThis script creates small versions of your photos and videos so you can have access to them at all times from your device, taking a fraction of their original space and allowing you to move the original images to another storage medium like a pendrive, hard drive or desktop computer without loosing access to them."
+    [xxh128sum_missing]="xxh128sum command from xxhash is required to compute media hashes"
+)
+
+# shellcheck disable=SC2034
+declare -A msg_es=(
+    [aborted]="Proceso interrumpido..."
+    [allow_dupes]="Permitir contenido duplicado? (mismo video / foto con distinto nombre de archivo)"
+    [already_running]="Desnublado ya se está ejecutando. Saliendo..."
+    [ask_autostart]="Añadir este programa a .bashrc para que empiece de forma automática al lanzar %s? Esta es la opción recomendada si instalaste %s solo para utilizar este programa."
+    [calc_hash_error]="No se puede computar el hash del archivo!"
+    [closing_in_seconds]="Cerrando en %s segundos"
+    [computing_hash]="Computando el hash..."
+    [continue_no_install]="Continuar sin instalar"
+    [conversion_error]="Error en la conversión!"
+    [conversion_errors]="Errores: %s"
+    [converting_img]="Procesando imagen..."
+    [date_rename]="Reorganizar los archivos convertidos en carpetas año/mes y renombrar con fecha hora y milisegundo? por ejemplo: i.e. 2020/01/20200123_012345_123.jpg"
+    [default_setting]="(Valor predeterminado)"
+    [disable]="Desactivar"
+    [done]="Completado!"
+    [done]="Instalación completada!"
+    [done_termux]="Puedes salir escribiendo \"exit\" ahora. La próxima vez que abras %s el programa empezará a crear versiones pequeñas de tus fotos y videos."
+    [do_scroll]="Mostrar el historial completo de archivos procesados? Cuando está desactivado, el historial se limita a la cantidad visible en la pantalla."
+    [download_error]="Error en la descarga!"
+    [downloading_ffmpeg]="Descargando ffmpeg..."
+    [dst_not_exist]="La carpeta destino no existe o no se puede escribir:\n${dst}"
+    [enable]="Activar"
+    [error_checking_remote_file]="Error al intentar comprobar archivo remoto. ¿Hay conexión de red?"
+    [error_invalid_signature]="La versión descargada no contiene una firma digital válida. Cancelando actualización!"
+    [exiftool_missing]="exiftool es necesario para copiar los metadatos de fecha y GPS!"
+    [ffmpeg_missing]="ffmpeg es necesario para procesar los videos!"
+    [file_deleted]="Archivo borrado!"
+    [file_no_meta_hash]="El archivo no tiene source hash meta..."
+    [file_repeated]="Contenido repetido!"
+    [import_error]="Error al importar, no se puede mover el archivo!"
+    [installing_packages]="Instalando programas requeridos..."
+    [install_packages]="Instalar programas"
+    [install_required_packages]="Instalar los programas requeridos? (curl, exiftool, ffmpeg, imagemagick, sqlite3, xxhash, xz-utils)"
+    [invalid_option]="Opción inválida! Inténtalo de nuevo."
+    [iterating]="\033[1m%s: %d archivos\033[0m"
+    [low_space]="Poco espacio libre: %'dM"
+    [magic_missing]="magick (de imagemagick) es necesario para convertir imágenes!"
+    [move_sources]="Mover las fotos y videos originales a la carpeta Camera_done una vez procesados?"
+    [move_src_error]="No se pudo mover el archivo origen a la carpeta done!"
+    [move_tmp_error]="No se pudo mover el archivo temporal al destino final!"
+    [no_new_version_available]="Ya tienes la versión más reciente disponible."
+    [no_ssh_keygen]="El programa ssh-keygen es necesario para verificar la firma digital de las actualizaciones de desnublado!"
+    [no_sudo_command]="El comando sudo no está disponible!"
+    [not_a_valid_option]="Opción no válida"
+    [not_a_valid_value]="Valor no válida"
+    [processed]="Procesados: %s"
+    [rebuilding_database]="Reconstruyendo base de datos..."
+    [select_language]="Escoge idioma:"
+    [show_full_path]="Mostrar la ruta completa de todos los archivos en lugar de la parte relativa a su carpeta origen / destino?"
+    [skip_existing_target]="Archivo ya convertido..."
+    [skipped]="Saltados: %s"
+    [sqlite_create_error]="sqlite3 error creando base de datos!"
+    [sqlite_missing]="sqlite3 es necesario para las funciones de base de datos."
+    [sqlite_query_error]="sqlite3 error en consulta: %s"
+    [src_done_not_exist]="La carpeta de orígenes procesados no existe o no se puede escribir:\n${src_done}"
+    [src_extra_done_not_exist]="La carpeta de orígenes extra procesados no existe o no se puede escribir:\n${src_extra_done}"
+    [src_extra_dst]="La carpeta de destino extra no existe o no se puede escribir:\n${src_extra_dst}"
+    [src_not_exist]="La carpeta origen no existe:\n${src}"
+    [starting_in_seconds]="Iniciando en %s segundos"
+    [termux_storage_info]="Este programa necesita acceso a la carpeta DCIM para poder procesar las fotos y videos."
+    [tmp_not_writable]="La carpeta temporal no existe o no se puede escribir:\n${tmp}"
+    [unknown_command]="Comando desconocido"
+    [unsupported_distro]="Distribución no soportada! Tienes que instalar los siguientes programas de forma manual: curl, exiftool, ffmpeg, imagemagick, sqlite3, ssh-keygen, xxhash, xz-utils"
+    [updating_to_new_version]="Actualizando a la versión: %s"
+    [video_eta]="%s.%ss de %ss (%s%%) eta: %s"
+    [welcome]="Bienvenido al instalador de desnublado\n\nEste script crea versiones pequeñas de tus fotos y videos para que puedas tener acceso a ellos en todo momento desde tu dispositivo, ocupando una fracción del espacio original y permitiéndote mover las fotos y videos originales a otro medio de almacenamiento como un pendrive, disco duro o computadora de sobremesa sin perder acceso a ellos."
+    [xxh128sum_missing]="El comando xxh128sum del paquete xxhash es necesario para computar los hashes"
+)
+
+declare -A options=(
+    [allow_dupes]="false"
+    [date_rename]="true"
+    [do_scroll]="false"
+    [move_sources]="true"
+    [show_full_path]="false"
+)
+
+answer_is_true() {
+    # allows to reply yes, no or leave blank (default action) with return codes 0, 1, 2 respectively.
+
+    local opt
+
+    while true; do
+        read -r -n 2 -p "#? " opt
+        case "$opt" in
+            1) return 0 ;;
+            2) return 1 ;;
+            *) [ -z "$opt" ] && return 2 || echo ;;
+        esac
+    done
+
+}
+
+ask_on_off() {
+
+    local _ret
+    msg "$1"
+
+    local is_on="" is_off=""
+    [ "$2" = "true" ] && is_on="$(msg 'default_setting')"
+    [ "$2" = "false" ] && is_off="$(msg 'default_setting')"
+
+    echo "1) $(msg 'enable') $is_on"
+    echo "2) $(msg 'disable') $is_off"
+
+    # answer_is_true && return 0 || return 1
+    answer_is_true
+    _ret="$?"
+    [ "$_ret" -gt 1 ] && [ "$2" = "true" ] || return $_ret
+
+}
+
+build_ext_list(){
+    # uses global ext_list and ext_params
+
+    local ext
+
+    ext_params=( \( )
+
+    for ext in $ext_list; do
+        [[ ${#ext_params[@]} -gt 1 ]] && ext_params+=( -o )
+        ext_params+=( -iname "*.$ext" )
+    done
+    ext_params+=( \) )
+
+}
+
+build_target() {
+    # returns 1 if target exists
+    # uses global vars src, dst
+
+    local file="$1"
+    local source_hash="${2:-}"
+    local import_mode="${3:-}"
+    local hash=""
+    local filename
+    local target=""
+    local ext="${file##*.}"
+    local date_regex='.*([0-9]{8}_[0-9]{6})([0-9]{3}|[-_.][0-9]+)?.*$'
+    local datetime=""
+    local subsectime=""
+    local idx=1
+    local idx_pad
+
+    # If doing the check before generating the target I save the time of checking existing files
+    # and extracting their sourcehash meta. This means the function must receive source_hash if use_db.
+    # force_overwrite is pointless here, as the generated target may be a different file and
+    # would need to replace the existing target...
+    # aka if force_overwrite ... delete existing target and remove entry from DB.
+    use_db && have_a_target "$source_hash" && return 1
+
+    if is_image "$file"; then
+        ext="avif"
+    else
+        ext="mkv"
+    fi
+
+    target="${file/#$src/$dst}"
+    target="${target%.*}.${ext}"
+
+    if [ "$date_rename" = true ]; then
+
+        # basename
+        filename=${file##*/}
+
+        if [[ $filename =~ $date_regex ]]; then
+
+            datetime="${BASH_REMATCH[1]}"
+
+            if [[ -n "${BASH_REMATCH[2]}" ]]; then
+                datetime="${datetime}_${BASH_REMATCH[2]#[-_.]}"
+                # set conflict index to the same base 10 integer value as the filename ms suffix match
+                idx="$(( 10#${BASH_REMATCH[2]#[-_.]} ))"
+            elif is_image "$file"; then
+                # filename regex has not millisecond. Try to get it from metadata SubSecTime
+                subsectime="$(get_mstime "$file")"
+
+                # pad to 3 digits, and will pad idx accordingly.
+                if [ -n "$subsectime" ]; then
+                    idx="$subsectime"
+                    subsectime=$(printf "%03d" "$subsectime")
+                    datetime="${datetime}_${subsectime}"
+                fi
+            fi
+        fi
+
+        if [ -z "$datetime" ]; then
+
+            # try to get creation date from metadata if filename does not provide it
+            datetime="$(get_datetime "$file")"
+
+            if [[ -z "$datetime" ]]; then
+
+                if [[ "$filename" =~ ^([0-9]+)[-_][a-zA-Z]*([0-9]+) ]]; then
+
+                    # try to fetch filenames like 20200623-WG0023.mp4 to generate 20200623_000000_0023
+                    datetime="${BASH_REMATCH[1]}_000000_${BASH_REMATCH[2]}"
+
+                elif [[ "$filename" =~ ^([0-9]+)[-_] ]]; then
+
+                    # try to fetch filenames like 20200623-whatever.mp4 to generate 20200623_000000_1
+                    datetime="${BASH_REMATCH[1]}_000000_1"
+
+                else
+
+                    # if not filename date match use file mod time. On device should be accurate.
+                    datetime=$(date -r "$file" +"%Y%m%d_%H%M%S")
+
+                fi
+
+            else
+                # we got a valid metadata date... if is an image, try to get millisecond
+                if is_image "$file"; then
+
+                    subsectime="$(get_mstime "$file")"
+
+                    # pad to 3 digits, and will pad idx accordingly.
+                    if [ -n "$subsectime" ]; then
+                        idx="$subsectime"
+                        subsectime=$(printf "%03d" "$subsectime")
+                        datetime="${datetime}_${subsectime}"
+                    fi
+
+                fi
+            fi
+
+        fi
+
+        if [ "$datetime" ]; then
+            target="${dst}/${datetime:0:4}/${datetime:4:2}/${datetime}.${ext}"
+
+            while [ -f "$target" ]; do
+                # get the source hash embeed in the existing target's metadata
+                hash="$(get_source_hash "$target")"
+
+                # existing file is from same source video
+                [[ "$hash" == "$source_hash" ]] && break
+
+                # ensure consistency by padding all files to 3 digits (ms or repeat index)
+                idx_pad=$(printf "%03d" "$idx")
+
+                # db-less approach to prevent duplicates and filename conflicts based on source hash
+                target="${dst}/${datetime:0:4}/${datetime:4:2}/${datetime}_${idx_pad}.${ext}"
+                (( idx++ ))
+            done
+        fi
+
+    elif [ -n "$import_mode" ]; then
+
+        while [ -f "$target" ]; do
+            # get the source hash embeed in the existing target's metadata
+            hash="$(get_source_hash "$target")"
+
+            # existing file is from same source video
+            [[ "$hash" == "$source_hash" ]] && break
+
+            # ensure consistency by padding all files to 3 digits (ms or repeat index)
+            idx_pad=$(printf "%03d" "$idx")
+
+            # db-less approach to prevent duplicates and filename conflicts based on source hash
+            target="${file/#$src/$dst}"
+            target="${target%.*}_${idx_pad}.${ext}"
+            (( idx++ ))
+        done
+
+    fi
+
+    # if we arrive here and target exists, is because:
+    #   date_rename is enabled and target has same sourchash (either normal or import mode),
+    #   or no date_rename but import mode and existing file has same source hash
+    #   or no date_rename no import and no use_db (aka we don't care is existing file is same or not)
+    # so far only overwrite if allow_dupes=true
+    [[ "$force_overwrite" = false && -f "$target" ]] && return 1
+
+    echo -n "$target"
+
+}
+
+choose_on_off() {
+
+    ask_on_off "$1" "$opt_ref" && opt_ref="true" || opt_ref="false"
+
+}
+
+cleanup_exit() {
+
+    maybe_reset_scroll
+    show_cursor
+    [ -f "$tmp/tmp.mkv" ] && rm "$tmp/tmp.mkv"
+    [ -f "$tmp/tmp.avif" ] && rm "$tmp/tmp.avif"
+    [ -f "$tmp/.desnublado.new" ] && rm "$tmp/.desnublado.new"
+    [ -f "$tmp/.desnublado.pub" ] && rm "$tmp/.desnublado.pub"
+    [ -f "$tmp/.desnublado.sig" ] && rm "$tmp/.desnublado.sig"
+    [ -f "$lock_file" ] && rm "$lock_file"
+
+}
+
+compute_hash() {
+
+    # uses global source_hash
+    local file="$1"
+    local fs
+    local cm=""
+
+    fs="$(du "$file" | cut -f1)"
+
+    # show computing hash message only to files bigger than 25mb
+    if [[ $fs =~ ^[0-9]+$ && $((10#$fs)) -gt 25600 ]]; then
+        cm="$(msg 'computing_hash')"
+    fi
+
+    [ -n "$cm" ] && printf "%s\r" "$cm"
+
+    source_hash=$("$hasher" "$file" | cut -d' ' -f1)
+
+    [ -n "$cm" ] && reset_line
+
+    if [ -z "$source_hash" ]; then
+        error_msg "$(msg 'calc_hash_error')"
+        return 1
+    fi
+
+}
+
+compute_or_get_meta_hash() {
+    # uses global source_hash
+
+    local file="$1"
+    local import_mode="${2:-}"
+
+    if [ -n "$import_mode" ]; then
+        source_hash="$(get_source_hash "$file")"
+        if [ -z "$source_hash" ]; then
+            error_msg "$(msg 'file_no_meta_hash')"
+            return 1
+        fi
+    else
+        compute_hash "$file"
+    fi
+
+}
+
+convert() {
+
+    # uses global var convert_return_code
+    local src_original
+
+    set_title
+    validate_paths || return
+    validate_command magick ffmpeg exiftool "$hasher"
+
+    if use_db; then
+        validate_command sqlite3
+
+        if [ -f "$rebuild_flag" ]; then
+            rm "$rebuild_flag"
+            rebuild_database
+            cleanup_exit
+            exit
+        else
+            db_init
+        fi
+
+    fi
+
+    build_ext_list
+    hide_cursor
+    get_sys_tz
+
+    # import before processing
+    if [[ -n "$src_import" && -d "$src_import" ]]; then
+        src_original="$src"
+        src="$src_import"
+        process_sources "import"
+        echo
+        src="$src_original"
+    fi
+
+    process_sources
+
+    if [[ -n "$src_extra" && -d "$src_extra" ]]; then
+        src="$src_extra"
+        [ -n "$src_extra_done" ] && src_done="$src_extra_done"
+        [ -n "$src_extra_dst" ] && dst="$src_extra_dst"
+        echo
+        process_sources
+    fi
+
+}
+
+convert_image() {
+
+    local hash="$1"
+    local file="$2"
+    local target="$3"
+    local tmp_target="$tmp/tmp.avif"
+
+    printf "%s\r" "$(msg 'converting_img')"
+
+    # preserve orientation, date time and gps metadata
+    magick "$file" "${magick_params[@]}" -auto-orient -strip "$tmp_target" \
+        && exiftool -q -q -overwrite_original -tagsFromFile "$file" -gps:all -time:all -UserComment="microbkpSourceHash=${hash}" "$tmp_target" \
+        && mv "$tmp_target" "$target"
+
+    reset_line
+
+    if [ ! -s "$target" ]; then
+        [ -f "$target" ] && rm "$target"
+        return 1
+    fi
+
+}
+
+convert_video() {
+
+    local hash="$1"
+    local file="$2"
+    local target="$3"
+    local tmp_target="$tmp/tmp.mkv"
+
+    local last=""
+    local eta
+    local duration_us
+    local duration_i
+    local duration_d
+    local start_ts
+    local now_ts
+    local elapsed
+    local current_us
+    local percent
+    local sec
+    local tenth
+    local total_est
+    local remaining
+
+    # Get duration in milliseconds from ffprobe (seconds.milliseconds)
+    duration_d=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$file") || return 1
+    duration_us="${duration_d/./}"
+    duration_i="${duration_d%.*}"
+    duration_d="${duration_d#*.}"
+    duration_d="${duration_i}.${duration_d:0:1}" # seconds and 1st decimal
+
+    # to calc ETA to completion
+    start_ts=$(date +%s)
+
+    # Use process substitution with progress parsing
+    while IFS='=' read -r key value; do
+
+        now_ts=$(date +%s)
+        elapsed=$(( now_ts - start_ts ))
+
+        if [[ "$key" == "out_time_us" ]]; then
+
+            current_us=$value
+
+            if [[ "$current_us" != "N/A" ]] && [[ $duration_us -gt 0 ]] && [[ $current_us -gt 0 ]]; then
+
+                [ -z "$last" ] && last=$value
+                [ "$current_us" -lt "$last" ] && continue
+
+                last=$value
+                percent=$(( (current_us * 100) / duration_us ))
+                [[ $percent -gt 100 ]] && percent=100
+                sec=$(( current_us / 1000000 ))
+                tenth=$(( (current_us % 1000000) / 100000 ))  # first decimal digit, truncated
+
+                if (( percent > 0 )); then
+                    total_est=$(( elapsed * 100 / percent ))
+                    remaining=$(( total_est - elapsed ))
+                    (( remaining < 0 )) && remaining=0
+                    eta=$(printf "%02d:%02d:%02d" "$((remaining/3600))" "$(((remaining%3600)/60))" "$((remaining%60))")
+                else
+                    eta="--:--"
+                fi
+
+                printf "%s\r" "$(msg 'video_eta' "$sec" "$tenth" "$duration_d" "$percent" "$eta")"
+
+            fi
+        fi
+    done < <(ffmpeg -nostdin -hide_banner -loglevel error -y -i "$file" -metadata comment="microbkpSourceHash=${hash}" "${ffmpeg_params[@]}" -map_metadata 0 -progress - -nostats "$tmp_target" 2>&1)
+
+    reset_line
+
+    if [ ! -s "$tmp_target" ]; then
+        [ -f "$tmp_target" ] && rm "$tmp_target"
+        return 1
+    fi
+
+    if ! mv "$tmp_target" "$target"; then
+        error_msg "$(msg 'move_tmp_error')"
+        rm  "$tmp_target"
+        return 1
+    fi
+
+}
+
+db_init() {
+
+    [[ -s "$db" ]] && return
+
+    echo '
+CREATE TABLE "target" (
+  "id" INTEGER PRIMARY KEY AUTOINCREMENT,
+  "hash" VARCHAR NOT NULL,
+  "file" VARCHAR NOT NULL,
+  UNIQUE ("hash")
+);
+' | sqlite3 "$db" || error_exit "$(msg 'sqlite_create_error')"
+
+
+
+
+}
+
+db_query() {
+
+    echo "$1" | sqlite3 "$db" || error_exit "$(msg 'sqlite_query_error' "$1")"
+
+}
+
+edit_override() {
+
+    local opt="${1:-}"
+    local val="${2:-}"
+    local ok="false"
+
+    case "$opt" in
+        src)
+            [ -r "$val" ] && ok="true"
+            ;;
+        src_extra|src_import)
+            [[ -z "$val" || -r "$val" ]] && ok="true"
+            ;;
+        db|dst|lock_file|rebuild_flag|src_done|tmp)
+            exist_writable "$val" && ok="true"
+            ;;
+        src_extra_done|src_extra_dst)
+            [ -z "$val" ] || exist_writable "$val" && ok="true"
+            ;;
+        min_free_mb)
+            # prevent octal params. min 2 digits, aka 10mb
+            [[ $val =~ ^[1-9][0-9]+$ ]] && ok="true"
+            ;;
+        ext_list)
+            [[ $val =~ ^[[:space:]a-zA-Z0-9]+$ ]] && ok="true"
+            ;;
+        allow_dupes|date_rename|do_scroll|force_overwrite|move_sources|show_full_path)
+            [[ "$val" = "true" || "$val" = "false" ]] && ok="true"
+            ;;
+        *)
+            error_exit "$(msg 'not_a_valid_option'): $opt"
+            ;;
+    esac
+
+    if [ "$ok" = "true" ]; then
+        save_override "$opt" "$val"
+    else
+        error_exit "$(msg 'not_a_valid_value'): $val"
+    fi
+
+}
+
+error_exit() {
+
+    error_msg "${1:-}"
+    cleanup_exit
+    exit 1
+
+}
+
+error_msg() {
+
+    printf "\033[1;31m%s\033[0m\n" "${1:-}"
+
+}
+
+error_ret() {
+    # uses global convert_return_code
+
+    error_msg "${1:-}"
+    convert_return_code=1
+
+}
+
+exist_writable() {
+
+    # check if path exists and is writable, or does not exist but parent folder is writable
+    local path="${1:-}"
+    local _ret=1
+
+    if [ -n "$path" ]; then
+        # readlink removes trailing slash, resolves relative paths and symlinks
+        path="$(readlink -fn "$path")"
+
+        # check if path or parent is writable
+        [[ -w "$path" || -w "${path%/*}" ]] && _ret=0
+    fi
+
+    return $_ret
+
+}
+
+format_version() {
+
+    local v
+
+    v="$(printf "|%-10d|" "${1//./}")";
+    v="${v// /0}"
+    printf "%s" "${v//|/}"
+
+}
+
+get_datetime() {
+    # uses global variable sys_tz
+    # returns metadata datetime or empty string
+
+    # Videos and Images with metadata removed but gps metadata keept retain date time without tz offset info
+    # in such case we use system time zone to adjust the metadata value
+
+    local file="$1"
+    local datetime=""
+    local tz=""
+    local key
+    local val
+    local D
+    local metadata
+    local fix_tz="false"
+
+    metadata=$(exiftool -s -s -d "%Y%m%d_%H%M%S" -DateTimeOriginal -CreateDate -DateTimeDigitized -GPSDateTime -OffsetTimeOriginal -OffsetTime -OffsetTimeDigitized "$file")
+
+    while IFS=': ' read -r key val; do
+        case "$key" in
+            DateTimeOriginal|CreateDate|DateTimeDigitized)
+                [ -z "$datetime" ] && datetime="$val"
+                ;;
+            GPSDateTime)
+                if [ -z "$datetime" ]; then
+                    datetime="$val"
+                    fix_tz="true"
+                fi
+                ;;
+            OffsetTimeOriginal|OffsetTime|OffsetTimeDigitized)
+                [ -z "$tz" ] && tz="$val"
+                ;;
+        esac
+    done <<< "$metadata"
+
+    if [[ "$datetime" != "00000000_000000" && $datetime =~ ^[0-9]{8}_[0-9]{6} ]]; then
+
+        # if file is video or data comes from gps... need to adjust timezone
+        [ "$fix_tz" = "false" ] && ! is_image "$file" && fix_tz="true"
+
+        if [[ -z "$tz" && "$fix_tz" = "true" ]]; then
+
+            # File does not have OffsetTime meta, recalculate date with system tz
+            # convert to YYYY-MM-DD HH:MM:SS to compute TZ diff
+            D="$datetime"
+            D=$(date -d "${D:0:4}-${D:4:2}-${D:6:2} ${D:9:2}:${D:11:2}:${D:13:2}${sys_tz}" -u +"%Y%m%d_%H%M%S")
+
+            # validate output
+            [[ $D =~ ^[0-9]{8}_[0-9]{6} ]] && datetime="$D"
+
+        fi
+
+        printf "%s" "$datetime"
+
+    fi
+
+}
+
+get_mstime() {
+    # returns the value of the 1st 3 digits of SubSecTime rounder and as a decimal number, if present
+
+    local file="$1"
+    local mstime=""
+
+    if is_image "$file"; then
+        subsectime="$(exiftool -s -s -s -d "%Y%m%d_%H%M%S" -SubSecTimeOriginal -SubSecTime -SubSecTimeDigitized "$file" | head -n 1)"
+
+        # force detimal to prevent leading zeros making bash interpret the number as octal
+        if [[ $subsectime =~ ^[0-9]+$ && $((10#$subsectime)) -gt 0 ]]; then
+
+            # no leading zeros and max 3 digits does not need rounding (DSLR), otherwise do.
+            if [[ "${subsectime:0:1}" = "0" || "${#subsectime}" -gt 3 ]]; then
+                # we got a valid millisecond value
+                subsectime=$(printf "%06d" "$((10#$subsectime))")
+                # round the value
+                subsectime="$((10#${subsectime:0:3} + (10#${subsectime:3:1} >= 5 ? 1 : 0)))"
+            fi
+
+            if [[ $((10#$subsectime)) -gt 0 ]]; then
+                # no padding here, return as an integer base 10 value
+                mstime="$subsectime"
+            fi
+        fi
+
+    fi
+
+    printf "%s" "$mstime"
+
+}
+
+get_source_hash() {
+
+    local file="$1"
+    local hash=""
+    local hash_regex='^microbkpSourceHash=([0-9a-f]+$)'
+    local user_comment
+
+    if is_image "$file"; then
+
+        user_comment=$(exiftool -UserComment -s -s -s "$file")
+        [[ $user_comment =~ $hash_regex ]] && hash=${BASH_REMATCH[1]}
+
+    else
+
+        user_comment=$(ffmpeg -nostdin -hide_banner -i "$file" 2>&1)
+        [[ $user_comment =~ $hash_regex ]] && hash=${BASH_REMATCH[1]}
+    fi
+
+    echo -n "$hash"
+
+}
+
+get_sys_tz() {
+    # sets global variable timezone adjusted for utc computation
+
+    sys_tz=$(date +"%:z");
+    [ "${sys_tz:0:1}" = "+" ] && sys_tz="-${sys_tz:1}" || sys_tz="+${sys_tz:1}"
+
+}
+
+# shellcheck disable=SC2329
+handle_interrupt() {
+
+    cleanup_exit
+    reset_line
+    msg 'aborted'
+    exit 130
+
+}
+
+have_a_target() {
+
+    # return true if the hash corresponds to an existing target file
+    local hash="$1"
+    local IFS=$'\n'
+    local _ret=1
+    local file
+    local result
+
+    result=$(db_query "SELECT file FROM target WHERE hash='${hash/\'/\'\'}';")
+
+    for file in $result; do
+        if [ -f "$file" ]; then
+            _ret=0
+            break
+        fi
+    done
+
+    return $_ret
+
+}
+
+
+hide_cursor() {
+
+    [ $allow_dynamic = "true" ] && printf "\033[?25l"
+
+}
+
+in_array() {
+
+    local element
+    local item="$1"
+    shift
+    local array=("$@")
+
+    for element in "${array[@]}"; do
+        [[ "$element" == "$item" ]] && return 0
+    done
+
+    return 1
+
+}
+
+insert_target() {
+
+    local file="$1"
+    local hash="$2"
+
+    # sqlite 3.24.0 - https://www.sqlite.org/lang_UPSERT.html
+    db_query "INSERT INTO target (file, hash) VALUES ('${file/\'/\'\'}', '${hash/\'/\'\'}')
+                ON CONFLICT(hash) DO UPDATE SET file='${file/\'/\'\'}';"
+
+}
+
+install_autostart() {
+
+    local apk_name
+    local cnf_file
+    local desnublado_prefix="$HOME/bin"
+
+    is_termux && apk_name="Termux" || apk_name="Terminal (LVM)"
+
+    if [ "$interactive" = "true" ]; then
+        msg 'ask_autostart' "$apk_name" "$apk_name"
+        echo "1) $(msg 'enable') $(msg 'default_setting')"
+        echo "2) $(msg 'disable')"
+        answer_is_true
+        if [ "$?" -eq 1 ]; then
+            uninstall_autostart
+            return
+        fi
+    fi
+
+    # Remove it if present to update it
+    grep -q "# Desnublado autostart" ~/.bashrc 2>/dev/null && uninstall_autostart
+
+    # start termux with hidden keyboard. Playstore version does not support hide-soft-keyboard-on-startup
+    if is_termux; then
+        desnublado_prefix="$PREFIX/bin"
+        [ -f "$HOME/.termux/termux.properties" ] && cnf_file="$HOME/.termux/termux.properties" || cnf_file="$HOME/.config/termux/termux.properties"
+        [ -f "$cnf_file" ] && echo -e "\nhide-soft-keyboard-on-startup = true\n" >> "$cnf_file"
+    fi
+
+    # automatically launch script on init
+    cat >> "$HOME/.bashrc" <<EOF
+# Desnublado autostart
+
+echo "$(msg 'starting_in_seconds' '3')"
+read -t 3 -n 3 -s
+if [ \$? -eq 142 ]; then
+    clear
+    ${desnublado_prefix}/desnublado convert
+    _ret=\$?
+    echo "$(msg 'closing_in_seconds' '3')"
+    read -t 3 -n 3 -s
+    [ \$? -eq 142 ] && exit \$_ret
+fi
+
+# autostart end
+EOF
+
+    echo
+    msg 'done_termux' "$apk_name"
+
+}
+
+install_deps() {
+
+    local opt
+    local maybe_sudo_apt="sudo apt"
+    local maybe_ssh_keygen=""
+    local do_keygen=""
+
+    [ "${1:-}" = "ssh-keygen" ] && do_keygen="true"
+
+    if [ "$interactive" = "true" ]; then
+        msg 'install_required_packages'
+
+        if [ "$do_keygen" = "true" ]; then
+            echo "1) $(msg 'install_packages_sshkeygen') $(msg 'default_setting')"
+        else
+            echo "1) $(msg 'install_packages') $(msg 'default_setting')"
+        fi
+
+        echo "2) $(msg 'continue_no_install')"
+        answer_is_true
+        [ "$?" -eq 1 ] && return
+    fi
+
+    msg 'installing_packages'
+
+    if is_termux; then
+
+        [ "$do_keygen" = "true" ] && maybe_ssh_keygen="openssh"
+
+        pkg update \
+            && DEBIAN_FRONTEND=noninteractive pkg upgrade -y -o Dpkg::Options::="--force-confnew" \
+            && DEBIAN_FRONTEND=noninteractive pkg install -y -o Dpkg::Options::="--force-confnew" \
+                curl \
+                exiftool \
+                ffmpeg \
+                imagemagick \
+                sqlite \
+                xz-utils \
+                xxhash "$maybe_ssh_keygen"
+
+    elif is_apt_distro; then
+
+        [ "$(whoami 2>/dev/null)" = "root" ] && maybe_sudo_apt="apt"
+        [ "$do_keygen" = "true" ] && maybe_ssh_keygen="openssh-client"
+
+        $maybe_sudo_apt update \
+            && DEBIAN_FRONTEND=noninteractive $maybe_sudo_apt upgrade -y -o Dpkg::Options::="--force-confnew" \
+            && DEBIAN_FRONTEND=noninteractive $maybe_sudo_apt install -y -o Dpkg::Options::="--force-confnew" \
+                curl \
+                exiftool \
+                imagemagick \
+                sqlite3 \
+                xz-utils \
+                xxhash "$maybe_ssh_keygen"
+
+        install_ffmpeg
+
+    elif is_alpine; then
+
+        [ "$do_keygen" = "true" ] && maybe_ssh_keygen="openssh-keygen"
+
+        if [ "$(whoami 2>/dev/null)" = "root" ] || command -v "sudo" > /dev/null; then
+            apk add --no-cache curl exiftool ffmpeg imagemagick libavif libheif sqlite xxhash "$maybe_ssh_keygen"
+        else
+            msg 'no_sudo_command'
+        fi
+
+    else
+        # rpm based to be tested
+        msg 'unsupported_distro'
+
+    fi
+
+}
+
+install_desnublado() {
+
+    local dst="$HOME/bin"
+    local src="${1:-$0}"
+
+    if is_termux; then
+        [ -n "${PREFIX:-}" ] && dst="$PREFIX/bin"
+    else
+        [[ ":$PATH:" != *":$HOME/bin:"* ]] && printf "\n%s\n" "PATH=\"$dst:\$PATH\"" >> "$HOME/.profile"
+        [ ! -d "$dst" ] && mkdir "$dst"
+    fi
+
+    # allow to run setup to change settings after initial setup
+    if [ "$src" != "$dst/desnublado" ]; then
+        if mv "$src" "$dst/desnublado"; then
+            [ -z "${1:-}" ] && echo "${src##*/} -> $dst/desnublado"
+        fi
+    fi
+
+    [ -f "$dst/desnublado" ] && chmod +x "$dst/desnublado"
+
+}
+
+install_ffmpeg() {
+
+    local arch=""
+    local link=""
+    local maybe_sudo_mv="mv"
+
+    [ "$(whoami 2>/dev/null)" != "root" ] && maybe_sudo_mv="sudo mv"
+
+    arch="$(uname -m)"
+    [ "$arch" = "x86_64" ] && link="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
+    [ "$arch" = "aarch64" ] && link="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linuxarm64-gpl.tar.xz"
+
+    msg 'downloading_ffmpeg'
+    echo "$link"
+
+    [ -n "$link" ] && curl -fL#o "./ffmpeg.tar.xz" "$link" \
+        && tar xf ffmpeg.tar.xz \
+        && $maybe_sudo_mv ffmpeg-master-latest-linux*-gpl/bin/ff{mpeg,probe} /usr/local/bin/ \
+        && rm -rf ffmpeg-master-latest-linux*-gpl \
+        && rm ./ffmpeg.tar.xz
+
+}
+
+is_alpine() {
+
+    # detect alpine linux (docker) ... use alpine:edge
+    command -v "apk" > /dev/null && [ -f "/etc/alpine-release" ]
+
+}
+
+is_apt_distro() {
+
+    command -v "apt" > /dev/null
+
+}
+
+is_image() {
+
+    local ext="${1##*.}"
+    ! [[ " mp4 avi mov mkv flv wmv webm m4v mpg mpeg 3gp ogv ts m2ts mts asf rm rmvb vob f4v " == *" ${ext,,} "* ]]
+
+}
+
+is_lvm() {
+
+    [[ "${USER:-}" = "droid" && -d "/mnt/shared/DCIM" ]]
+
+}
+
+is_termux() {
+
+    [ -n "${TERMUX_VERSION:-}" ]
+
+}
+
+main() {
+
+    local cmd="${1:-}"
+    local force=""
+
+    case "$cmd" in
+        convert)
+            allow_dynamic="true"
+            convert
+            cleanup_exit
+            return $convert_return_code
+            ;;
+        override)
+            shift
+            edit_override "$@"
+            ;;
+        help|--help|-help|-h|"")
+            show_help
+            ;;
+        setup)
+            [[ "|-y|--yes|--non-interactive|" == *"|${2:-}|"* ]] && interactive="false"
+            setup_desnublado
+            ;;
+        update)
+            [[ "|-y|--yes|--non-interactive|" == *"|${2:-}|"* ]] && interactive="false"
+            [[ "|-f|--force|" == *"|${2:-}|"* ]] && force="--force"
+            update_desnublado "$force"
+            ;;
+        *)
+            error_exit "$(msg 'unknown_command'): $cmd"
+            ;;
+    esac
+
+}
+
+maybe_move_source() {
+
+    [ ! "$move_sources" = true ] && return
+
+    local file="$1"
+    local target="${file/#$src/$src_done}"
+
+    # make path for target
+    [ ! -d "${target%/*}" ] && mkdir -p "${target%/*}"
+
+    # simple source exist skip
+    [ -f "$target" ] && return
+
+    if ! mv "$file" "$target"; then
+        error_msg "$(msg 'move_src_error')"
+    fi
+
+}
+
+maybe_reset_scroll() {
+
+    if [[ "$do_scroll" = false && $allow_dynamic = "true" ]]; then
+
+        local rows
+        rows="$(terminal_rows)"
+
+        # Reset scrolling region to normal
+        printf "\033[r"
+
+        printf "\033[%s;1H" "$(( rows - 1 ))"
+        reset_line
+        printf "\033[1m-----------------------\033[0m"
+
+        # Move cursor under footer
+        printf "\033[%s;1H" "$rows"
+    fi
+
+}
+
+msg() {
+
+    local key="$1"
+    shift
+
+    if [[ -v 'messages[$key]' ]]; then
+        # shellcheck disable=SC2059
+        printf "${messages[$key]}\n" "$@"
+    else
+        echo "$key"
+    fi
+
+}
+
+print_file() {
+    # uses global var show_full_path
+
+    local file="$1"
+    local base="$2"
+    local filesize
+    local filename
+
+    [ "$show_full_path" = false ] && filename="${file/#$base\//}" || filename="$file"
+    filesize="$(du -h "$file" | cut -f1)"
+
+    printf "%s\n" "$filename ($filesize)"
+
+}
+
+process_sources() {
+    # use global variable source_hash, convert_return_code, allow_dupes
+
+    local import_mode="${1:-}"
+    local idx=0
+    local errors=0
+    local skipped=0
+    local ok=0
+    local total
+    local file
+
+    # to track overall progress (x of y)
+    total=$(find "$src" "${ext_params[@]}" | wc -l)
+    printf "%s\n" "$(msg 'iterating' "${src##*/}" "$total")"
+
+    while IFS= read -d $'\0' -r file ; do
+
+        (( idx++ ))
+        source_hash=""
+
+        # skip empty source
+        if [ ! -s "$file" ]; then
+            (( skipped++ ))
+            continue
+        fi
+
+        # skip unreadable source
+        if [ ! -r "$file" ]; then
+            (( skipped++ ))
+            continue
+        fi
+
+        # do not fill target file system
+        free_mb=$(df -P -k "$dst" | awk 'NR==2 {printf "%.0f\n", $4/1024}')
+        if (( free_mb < min_free_mb )); then
+            error_exit "$(msg 'low_space' "$free_mb")"
+        fi
+
+        printf "%s\n" "[${idx}/${total}]"
+        print_file "$file" "$src"
+
+        if [[ "$date_rename" = true || -n "$import_mode" || "$allow_dupes" = false ]]; then
+            # when renaming targets, source_hash needs to be computed to check if target exists
+            if ! compute_or_get_meta_hash "$file" "$import_mode"; then
+                (( errors++ ))
+                continue
+            fi
+
+            if ! target="$(build_target "$file" "$source_hash" "$import_mode")"; then
+
+                if [ -n "$import_mode" ]; then
+                    rm "$file"
+                else
+                    maybe_move_source "$file"
+                fi
+
+                msg 'skip_existing_target'
+                (( skipped++ ))
+                continue
+            fi
+
+        else
+            # when not renaming and not using db, checking if target exists is enough to skipt to next source
+            # aka: date_rename=fasle, allow_dupes=true, no import mode.
+            if ! target="$(build_target "$file")"; then
+                maybe_move_source "$file"
+                msg 'skip_existing_target'
+                (( skipped++ ))
+                continue
+            fi
+
+            if ! compute_hash "$file"; then
+                (( errors++ ))
+                continue
+            fi
+
+        fi
+
+        # make path for target
+        [ ! -d "${target%/*}" ] && mkdir -p "${target%/*}"
+
+        if [ -n "$import_mode" ]; then
+
+            if ! mv "$file" "$target"; then
+                error_msg "$(msg 'import_error')"
+                (( errors++ ))
+                continue
+            else
+                print_file "$target" "$dst"
+                (( ok++ ))
+            fi
+
+            # @TODO:
+            # here consider if it target being imported requires fixing file mod time
+            # as it may have been altered in the import process
+
+        else
+
+            if is_image "$file"; then
+                if ! convert_image "$source_hash" "$file" "$target"; then
+                    (( errors++ ))
+                    error_msg "$(msg 'conversion_error')"
+                fi
+            else
+                if ! convert_video "$source_hash" "$file" "$target"; then
+                    (( errors++ ))
+                    error_msg "$(msg 'conversion_error')"
+                fi
+            fi
+
+            # delete empty target
+            [[ -f "$target" ]] && [[ ! -s "$target" ]] && rm "$target" && continue
+
+            # keep original file mod time
+            if [ -f "$target" ];then
+                (( ok++ ))
+                touch -r "$file" "$target"
+                maybe_move_source "$file"
+                print_file "$target" "$dst"
+                use_db && insert_target "$target" "$source_hash"
+            fi
+
+        fi
+
+    done < <(find "$src" "${ext_params[@]}" -print0 | sort -z)
+
+    echo
+    msg 'processed' "$ok"
+    msg 'skipped' "$skipped"
+
+    if [ $errors -gt 0 ]; then
+        error_msg "$(msg 'conversion_errors' "$errors")"
+        convert_return_code=1
+    else
+        convert_return_code=0
+        msg 'conversion_errors' "$errors"
+    fi
+
+}
+
+
+rebuild_database() {
+    # Repopulates the targets database from scratch
+    # files without source hash are reported but ignored
+    # files repeated are deleted only if date_rename=true, otherwise just reported
+
+    # uses global variable db, source_hash, date_rename
+    local file
+    local import_mode="true"
+
+    rm "$db" && db_init
+    msg 'rebuilding_database'
+
+    while IFS= read -d $'\0' -r file ; do
+
+        print_file "$file" "$dst"
+        compute_or_get_meta_hash "$file" "$import_mode" || continue
+
+        if have_a_target "$source_hash"; then
+            msg 'file_repeated'
+            if [ "$date_rename" = true ]; then
+                rm "$file" && msg 'file_deleted'
+            fi
+        else
+            insert_target "$file" "$source_hash"
+        fi
+
+   done < <(find "$dst" \( -name "*.mkv" -o -name "*.avif" \) -print0 | sort -z)
+
+   msg 'done'
+
+}
+
+reset_line() {
+
+    # Move to start of line and clear it
+    printf "\r\033[K"
+
+}
+
+save_override() {
+
+    local opt="$1"
+    local val="${2:-}"
+    local file="$override_file"
+
+    if [ ! -f "$file" ] || ! grep -q "^\s*${opt}=" "$file"; then
+        echo "$opt='${val//\'/\'\\\\\'\'}'" >> "$file"
+    else
+        sed -i "/^\s*${opt}=/s|=.*|='${val//\'/\'\\\\\'\'}'|" "$file"
+    fi
+
+}
+
+select_lang(){
+    # uses global lang
+
+    local opt
+
+    msg 'select_language'
+
+    select opt in "${lang_list[@]}"; do
+
+        if in_array "$opt" "${lang_list[@]}"; then
+            lang="$opt"
+            declare -ng messages="msg_${lang}"
+            break
+        fi
+
+        msg 'invalid_option'
+    done
+
+}
+
+select_options() {
+
+    local key
+
+    for key in "${!options[@]}"; do
+        ask_on_off "$key" "${options[$key]}" && options[$key]="true" || options[$key]="false"
+        save_override "$key" "${options[$key]}"
+        echo
+    done
+
+    save_override "lang" "$lang"
+    cat "$override_file"
+
+}
+
+set_lang() {
+
+    # sets global variable lang based on ENV variable LANG
+    local LANG="${lang:-${DNBL_LANG:-${LANG:-en}}}"
+
+    for lang_code in "${lang_list[@]}"; do
+        # match things like en-us as en
+        [[ "$LANG" == "$lang_code"* ]] && lang="$lang_code"
+    done
+
+    [ -z "$lang" ] && lang="en"
+
+    declare -ng messages="msg_${lang}"
+
+}
+
+set_lock_file() {
+
+    if [ ! -d "$HOME/.config/desnublado" ]; then
+        mkdir -p "$HOME/.config/desnublado" || error_exit "Cannot create dir: $HOME/.config/desnublado"
+    fi
+
+    exec 9>"$lock_file"
+    if ! flock -n 9; then
+        msg 'already_running'
+        exit 0
+    fi
+
+}
+
+set_title() {
+    # uses global variable version
+
+    [[ "$do_scroll" = false && $allow_dynamic = "true" ]] && clear
+
+    # Output title (app name and version)
+    printf "\033[1m=== Desnublado v%s ===\033[0m\n" "$version"
+
+    if [[ "$do_scroll" = false && $allow_dynamic = "true" ]]; then
+
+        local rows
+        rows="$(terminal_rows)"
+
+        # Move cursor below the scrolling region to output footer
+        printf "\033[%s;1H" "$(( rows - 1 ))"
+        printf "\033[1m--- CTRL + C = stop ---\033[0m"
+
+        # Set scrolling region
+        printf "\033[3;%sr" "$(( rows - 2 ))"
+
+        # Move cursor to row 3, column 1 (start of scrolling region)
+        printf "\033[3;1H"
+    fi
+
+}
+
+setup_desnublado() {
+    # uses global variable interactive
+
+    [ ! -t 0 ] && interactive="false"
+
+    # allow users to choose lang
+    [ "$interactive" = "true" ] && select_lang
+    echo
+
+    msg 'welcome'
+    echo
+
+    install_deps
+    echo
+
+    test_versions
+    echo
+
+    if [ "$interactive" = "true" ]; then
+        select_options
+    else
+        [ "$lang" != "en" ] && save_override "lang" "$lang"
+    fi
+    echo
+
+    if is_termux && ! ls "$HOME/storage/shared/DCIM" > /dev/null 2>&1; then
+        msg 'termux_storage_info'
+        termux-setup-storage
+        echo
+    fi
+
+    # ensure we move only desnublado script and not "bash" if we run from a pipe
+    if [ "$interactive" = "false" ] && [ "${0##*/}" != "desnublado" ]; then
+        update_desnublado "--force"
+    else
+        install_desnublado
+    fi
+
+    if is_termux || is_lvm; then
+        install_autostart
+    fi
+
+    echo
+    msg 'done'
+    echo
+
+}
+
+
+show_cursor() {
+
+    [ $allow_dynamic = "true" ] && printf "\033[?25h"
+
+}
+
+show_help() {
+
+    local cmd="${0##*/}"
+
+    echo "Desnublado v${version}
+
+Usage:
+  $cmd convert
+    Convert photos and videos
+
+  $cmd [ help | --help | -help | -h ]
+    Show this help
+
+  $cmd override option value
+    Set the option to the given value
+
+  $cmd setup [ -y | -yes | --non-interactive ]
+    Perform the installaion, optionally without asking any question
+
+  $cmd update
+    Update to the latest version available
+
+Example:
+    $cmd override src_extra \"storage/shared/DCIM/OpenCamera\"
+"
+
+}
+
+terminal_rows() {
+
+    local rows
+    rows="${LINES:-}"
+
+    if [ -z "$rows" ]; then
+
+        rows="$(tput 2>/dev/null lines)"
+        if [ -z "$rows" ]; then
+            rows="$(stty size 2>/dev/null | cut -d' ' -f1)"
+            [ -z "$rows" ] && rows="19"
+        fi
+
+    fi
+
+    printf "%s" "$rows"
+
+}
+
+test_versions() {
+
+    # shellcheck disable=SC2005
+    command -v magick >/dev/null && echo "$(magick -version | grep -oE "ImageMagick [-.0-9]+")" || echo "ImageMagick ?"
+    command -v exiftool >/dev/null && echo "exiftool $(exiftool -ver)" || echo "exiftool ?"
+    command -v sqlite3 >/dev/null && echo "sqlite $(sqlite3 -version | grep -oE "[0-9.]+ [0-9]{4}-[0-9]{2}-[0-9]{2}")"  || echo "sqlite3 ?"
+    command -v ffmpeg >/dev/null && echo "ffmpeg $(ffmpeg -hide_banner -version | grep -oE "version [-_.a-zA-Z0-9]+" | head -1)" || echo "ffmpeg ?"
+    # shellcheck disable=SC2005
+    command -v curl >/dev/null && echo "$(curl --version | grep -oE "curl [0-9.]+")" || echo "curl ?"
+    # shellcheck disable=SC2005
+    command -v xxh128sum >/dev/null && echo "$(xxh128sum -V 2>&1 | grep -oE -m 1 "xxh128sum [.0-9]+")" || echo "xxh128sum ?"
+
+}
+
+uninstall_autostart() {
+
+    if grep -q "# Desnublado autostart" ~/.bashrc 2>/dev/null; then
+        sed -i '/^# Desnublado autostart/,/^# autostart end/d' "$HOME/.bashrc"
+    fi
+
+}
+
+update_desnublado() {
+
+    local base_url
+    local new_version
+    local new_v
+    local old_v
+    local public_key='desnublado@release ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILRUOIit/NU6usSafcc+mIxPlCjpCidS65+k7qY5MuCd solyplaya'
+    local force="false"
+
+    [ "${1:-}" = "--force" ] && force="true"
+
+    if ! command -v ssh-keygen > /dev/null; then
+        install_deps "ssh-keygen"
+        ! command -v ssh-keygen > /dev/null && return
+    fi
+
+    for base_url in "${download_mirrors[@]}"; do
+        new_version="$(curl -fsSL "${base_url}/desnublado" | sed -n 's/^readonly version="\([.0-9]\+\)".*/\1/p')"
+        [ -n "$new_version" ] && break
+    done
+
+    if [ -z "$new_version" ]; then
+        error_exit "$(msg 'error_checking_remote_file')"
+    fi
+
+    new_v="$(format_version "$new_version")";
+    old_v="$(format_version "$version")";
+
+    if [ "$force" = "true" ] || [ "$new_v" -gt "${old_v}" ]; then
+        msg 'updating_to_new_version' "$new_version"
+
+        curl -fsSL -o "$tmp/.desnublado.new" "${base_url}/desnublado" || error_exit "$(msg 'error_checking_remote_file')"
+        curl -fsSL -o "$tmp/.desnublado.sig" "${base_url}/desnublado.sig" || error_exit "$(msg 'error_checking_remote_file')"
+
+        echo "$public_key" > "$tmp/.desnublado.pub"
+
+        if ssh-keygen -Y verify -f "$tmp/.desnublado.pub" -I desnublado@release -n file -s "$tmp/.desnublado.sig" < "$tmp/.desnublado.new" > /dev/null; then
+            install_desnublado "$tmp/.desnublado.new"
+        else
+            error_exit "$(msg 'error_invalid_signature')"
+        fi
+
+        rm -f "$tmp"/.desnublado.*
+
+    else
+        msg 'no_new_version_available'
+        return
+    fi
+
+}
+
+use_db() {
+
+    [ "$allow_dupes" = false ]
+
+}
+
+validate_command() {
+
+    local cmd
+
+    for cmd in "$@"; do
+        command -v "$cmd" > /dev/null || error_exit "$(msg "${cmd}_missing")"
+    done
+
+}
+
+validate_paths() {
+
+    local ref
+    local var
+    local link
+
+    # resolve relative paths and symlinks. readlink returns empty if has no permission to read the path
+    for var in src dst src_done src_extra src_extra_done src_extra_dst src_import; do
+        declare -n ref="$var"
+        # [ -n "$ref" ] && ref="$(readlink -fn -- "$ref")"
+
+        # readlink returns empty if user has no permission to the path, in such case, restore value
+        # so validation logic applies
+        if [ -n "$ref" ]; then
+            link="$(readlink -fn -- "$ref")"
+            [ -n "$link" ] && ref="$link"
+        fi
+
+    done
+
+    [[ -z "$src" || ! -d "$src" ]] && error_ret "$(msg 'src_not_exist')"
+    [[ "$move_sources" = true && -n "$src_done" && ! -d "$src_done" ]] && mkdir -p -- "$src_done" 2>/dev/null
+    [[ "$move_sources" = true &&  ( -z "$src_done" || ! -d "$src_done" || ! -w "$src_done" ) ]] && error_ret "$(msg 'src_done_not_exist')"
+
+    [[ -n "$dst" && ! -d "$dst" ]] && mkdir -p -- "$dst" 2>/dev/null
+    [[ -z "$dst" || ! -d "$dst" || ! -w "$dst" ]] && error_ret "$(msg 'dst_not_exist')"
+    [[ -z "$tmp" || ! -d "$tmp" || ! -w "$tmp" ]] && error_ret "$(msg 'tmp_not_writable')"
+
+    [[ -n "$src_extra_dst" && ! -d "$src_extra_dst" ]] && mkdir -p -- "$src_extra_dst" 2>/dev/null
+    [[ -n "$src_extra_dst" && ( ! -d "$src_extra_dst" || ! -w "$src_extra_dst" ) ]] && error_ret "$(msg 'src_extra_dst')"
+
+    # We only check the extra if it is set and dir exists
+    if [[ -n "$src_extra" && -d "$src_extra" ]]; then
+        [[ "$move_sources" = true && -n "$src_extra_done" && ! -d "$src_extra_done" ]] && mkdir -p -- "$src_extra_done" 2>/dev/null
+        [[ "$move_sources" = true && -n "$src_extra_done" &&  ( ! -d "$src_extra_done" || ! -w "$src_extra_done" ) ]] && error_ret "$(msg 'src_extra_done_not_exist')"
+    fi
+
+    return $convert_return_code
+
+}
+
+# shellcheck disable=SC1090 # config override
+[ -f "$override_file" ] && source "$override_file"
+
+# Trap interrupts and exit instead of continuing any loops
+trap handle_interrupt SIGINT SIGTERM
+
+set_lock_file
+set_lang
+main "$@"
+
+# This is free and unencumbered software released into the public domain.
+#
+# Anyone is free to copy, modify, publish, use, compile, sell, or
+# distribute this software, either in source code form or as a compiled
+# binary, for any purpose, commercial or non-commercial, and by any
+# means.
+#
+# In jurisdictions that recognize copyright laws, the author or authors
+# of this software dedicate any and all copyright interest in the
+# software to the public domain. We make this dedication for the benefit
+# of the public at large and to the detriment of our heirs and
+# successors. We intend this dedication to be an overt act of
+# relinquishment in perpetuity of all present and future rights to this
+# software under copyright law.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+# IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+# OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+# ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+# OTHER DEALINGS IN THE SOFTWARE.
+
+#EOF

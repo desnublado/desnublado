@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 
+readonly version="2026.09.15"
+
 # desnublado - A minimal microBKP implementation to run on device.
 # Created by solyplaya and released into the Public Domain. See footer for details.
 
 set -o nounset
-
-readonly version="2026.09.11"
 
 if [ -d "$HOME/storage/shared/DCIM" ]; then
     # termux
@@ -40,6 +40,7 @@ show_full_path="${DNBL_SHOW_FULL_PATH:-false}"
 allow_dupes="${DNBL_ALLOW_DUPES:-false}" # false implies using sqlite3 database
 override_file="${DNBL_OVERRIDE_FILE:-$HOME/.config/desnublado/desnublado.override}"
 ext_list="${DNBL_EXT_LIST:-mp4 mkv jpg avif}"
+auto_update="${DNBL_AUTO_UPDATE:-false}"
 
 # non configurable globals
 hasher="xxh128sum"
@@ -53,7 +54,7 @@ ext_params=()
 download_mirrors=(
     "https://desnublado.com"
     "https://codeberg.org/desnublado/desnublado/raw/branch/main"
-    "https://raw.githubusercontent.com/desnublado/desnublado/refs/heads/main/"
+    "https://raw.githubusercontent.com/desnublado/desnublado/refs/heads/main"
 )
 interactive="true"
 
@@ -67,7 +68,9 @@ declare -A msg_en=(
     [allow_dupes]="Allow duplicate content files? (same photo/video with different file name)"
     [already_running]="Desnublado is already running. Exiting..."
     [ask_autostart]="Add this program to .bashrc so it starts automatically when you start %s? This is the recommended option if you installed %s only to use this program."
+    [auto_update]="Enable automatic updates?"
     [calc_hash_error]="Cannot compute file hash!"
+    [checking_updates]="Checking for updates..."
     [closing_in_seconds]="Closing in %s seconds"
     [computing_hash]="Computing file hash..."
     [continue_no_install]="Continue without installation"
@@ -138,7 +141,9 @@ declare -A msg_es=(
     [allow_dupes]="Permitir contenido duplicado? (mismo video / foto con distinto nombre de archivo)"
     [already_running]="Desnublado ya se está ejecutando. Saliendo..."
     [ask_autostart]="Añadir este programa a .bashrc para que empiece de forma automática al lanzar %s? Esta es la opción recomendada si instalaste %s solo para utilizar este programa."
+    [auto_update]="Actualizar desnublado de forma automática?"
     [calc_hash_error]="No se puede computar el hash del archivo!"
+    [checking_updates]="Buscando actualizaciones..."
     [closing_in_seconds]="Cerrando en %s segundos"
     [computing_hash]="Computando el hash..."
     [continue_no_install]="Continuar sin instalar"
@@ -209,6 +214,7 @@ declare -A options=(
     [do_scroll]="false"
     [move_sources]="true"
     [show_full_path]="false"
+    [auto_update]="false"
 )
 
 answer_is_true() {
@@ -502,6 +508,7 @@ convert() {
     build_ext_list
     hide_cursor
     get_sys_tz
+    maybe_auto_update
 
     # import before processing
     if [[ -n "$src_import" && -d "$src_import" ]]; then
@@ -680,8 +687,12 @@ edit_override() {
         ext_list)
             [[ $val =~ ^[[:space:]a-zA-Z0-9]+$ ]] && ok="true"
             ;;
-        allow_dupes|date_rename|do_scroll|force_overwrite|move_sources|show_full_path)
+        auto_update|allow_dupes|date_rename|do_scroll|force_overwrite|move_sources|show_full_path)
             [[ "$val" = "true" || "$val" = "false" ]] && ok="true"
+            ;;
+        '')
+            [ -s "$override_file" ] && cat "$override_file"
+            return 0
             ;;
         *)
             error_exit "$(msg 'not_a_valid_option'): $opt"
@@ -1171,6 +1182,29 @@ main() {
 
 }
 
+maybe_auto_update(){
+
+    # uses global update_interval
+
+    local days
+    local update_file="$HOME/.config/desnublado/desnublado.update_check"
+
+    [ "$auto_update" = "false" ] && return
+
+    if [ -f "$update_file" ]; then
+        days=$(( ($(date +%s) - $(stat -c %Y "$update_file")) / 86400 ))
+
+        if [ "$days" -ge 1 ]; then
+            touch "$update_file"
+            update_desnublado
+        fi
+
+    else
+        touch "$update_file"
+    fi
+
+}
+
 maybe_move_source() {
 
     [ ! "$move_sources" = true ] && return
@@ -1595,6 +1629,9 @@ Usage:
   $cmd override option value
     Set the option to the given value
 
+  $cmd override
+    Show overridden values
+
   $cmd setup [ -y | -yes | --non-interactive ]
     Perform the installaion, optionally without asking any question
 
@@ -1604,6 +1641,21 @@ Usage:
 Example:
     $cmd override src_extra \"storage/shared/DCIM/OpenCamera\"
 "
+
+}
+
+shuffle_mirrors(){
+
+    # uses global array download_mirrors
+    local total a b tmp
+
+    total=${#download_mirrors[@]}
+    for ((a=total-1; a>0; a--)); do
+        b=$(( RANDOM % (a+1) ))
+        tmp=${download_mirrors[a]}
+        download_mirrors[a]=${download_mirrors[b]}
+        download_mirrors[b]=$tmp
+    done
 
 }
 
@@ -1664,37 +1716,42 @@ update_desnublado() {
         ! command -v ssh-keygen > /dev/null && return
     fi
 
+    shuffle_mirrors
+    msg 'checking_updates'
+
     for base_url in "${download_mirrors[@]}"; do
-        new_version="$(curl -fsSL "${base_url}/desnublado" | sed -n 's/^readonly version="\([.0-9]\+\)".*/\1/p')"
+        new_version="$(curl -fsSL -H 'Range: bytes=0-63' "${base_url}/desnublado" | sed -n 's/^readonly version="\([.0-9]\+\)".*/\1/p')"
         [ -n "$new_version" ] && break
     done
 
     if [ -z "$new_version" ]; then
-        error_exit "$(msg 'error_checking_remote_file')"
-    fi
-
-    new_v="$(format_version "$new_version")";
-    old_v="$(format_version "$version")";
-
-    if [ "$force" = "true" ] || [ "$new_v" -gt "${old_v}" ]; then
-        msg 'updating_to_new_version' "$new_version"
-
-        curl -fsSL -o "$tmp/.desnublado.new" "${base_url}/desnublado" || error_exit "$(msg 'error_checking_remote_file')"
-        curl -fsSL -o "$tmp/.desnublado.sig" "${base_url}/desnublado.sig" || error_exit "$(msg 'error_checking_remote_file')"
-
-        echo "$public_key" > "$tmp/.desnublado.pub"
-
-        if ssh-keygen -Y verify -f "$tmp/.desnublado.pub" -I desnublado@release -n file -s "$tmp/.desnublado.sig" < "$tmp/.desnublado.new" > /dev/null; then
-            install_desnublado "$tmp/.desnublado.new"
-        else
-            error_exit "$(msg 'error_invalid_signature')"
-        fi
-
-        rm -f "$tmp"/.desnublado.*
-
+        error_msg "$(msg 'error_checking_remote_file')"
+        return 1
     else
-        msg 'no_new_version_available'
-        return
+        new_v="$(format_version "$new_version")";
+        old_v="$(format_version "$version")";
+
+        if [ "$force" = "true" ] || [ "$new_v" -gt "${old_v}" ]; then
+            msg 'updating_to_new_version' "$new_version"
+
+            curl -fsSL -o "$tmp/.desnublado.new" "${base_url}/desnublado" || error_exit "$(msg 'error_checking_remote_file')"
+            curl -fsSL -o "$tmp/.desnublado.sig" "${base_url}/desnublado.sig" || error_exit "$(msg 'error_checking_remote_file')"
+
+            echo "$public_key" > "$tmp/.desnublado.pub"
+
+            if ssh-keygen -Y verify -f "$tmp/.desnublado.pub" -I desnublado@release -n file -s "$tmp/.desnublado.sig" < "$tmp/.desnublado.new" > /dev/null; then
+                install_desnublado "$tmp/.desnublado.new"
+            else
+                error_msg "$(msg 'error_invalid_signature')"
+                return 1
+            fi
+
+            rm -f "$tmp"/.desnublado.*
+
+        else
+            msg 'no_new_version_available'
+            return 0
+        fi
     fi
 
 }

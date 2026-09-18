@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-readonly version="2026.09.15"
+readonly version="2026.09.18"
 
 # desnublado - A minimal microBKP implementation to run on device.
 # Created by solyplaya and released into the Public Domain. See footer for details.
@@ -18,6 +18,8 @@ else
     command -v xdg-user-dir > /dev/null && base_path="$(xdg-user-dir PICTURES)" || base_path="$HOME/Pictures"
 fi
 
+config_path="$HOME/.config/desnublado"
+
 src="${DNBL_SRC:-$base_path/Camera}"
 src_done="${DNBL_SRC_DONE:-$base_path/Camera_done}"
 src_extra="${DNBL_SRC_EXTRA:-$base_path/Camera_extra}"
@@ -26,9 +28,9 @@ src_extra_dst="${DNBL_SRC_EXTRA_DST:-}"
 src_import="${DNBL_SRC_IMPORT:-$base_path/Camera_import}"
 dst="${DNBL_DST:-$base_path/Camera_mini}"
 tmp="${DNBL_TMP:-${TMPDIR:-$HOME}}"
-lock_file="${DNBL_LOCK_FILE:-$HOME/.config/desnublado/.desnublado.lock}"
+lock_file="${DNBL_LOCK_FILE:-$config_path/.desnublado.lock}"
 rebuild_flag="${DNBL_REBUILD_FLAG:-$base_path/desnublado.rebuild}"
-db="${DNBL_DB:-$HOME/.config/desnublado/desnublado.db}"
+db="${DNBL_DB:-$config_path/desnublado.db}"
 min_free_mb="${DNBL_MIN_FREE_MB:-2048}" # target filesystem must have this free space to proceed (in megabytes)
 ffmpeg_params=(-vf scale=640:640:force_original_aspect_ratio=decrease:force_divisible_by=2 -c:v libsvtav1 -crf 41 -preset 2 -c:a libopus -b:a 64k)
 magick_params=(-resize @900000\>)
@@ -38,9 +40,11 @@ move_sources="${DNBL_MOVE_SOURCES:-true}"
 force_overwrite="${DNBL_FORCE_OVERWRITE:-false}"
 show_full_path="${DNBL_SHOW_FULL_PATH:-false}"
 allow_dupes="${DNBL_ALLOW_DUPES:-false}" # false implies using sqlite3 database
-override_file="${DNBL_OVERRIDE_FILE:-$HOME/.config/desnublado/desnublado.override}"
+override_file="${DNBL_OVERRIDE_FILE:-$config_path/desnublado.override}"
 ext_list="${DNBL_EXT_LIST:-mp4 mkv jpg avif}"
 auto_update="${DNBL_AUTO_UPDATE:-false}"
+prefer_meta="${DNBL_PREFER_META:-false}"
+prefer_utc="${DNBL_PREFER_UTC:-false}"
 
 # non configurable globals
 hasher="xxh128sum"
@@ -274,15 +278,7 @@ build_target() {
     local file="$1"
     local source_hash="${2:-}"
     local import_mode="${3:-}"
-    local hash=""
-    local filename
     local target=""
-    local ext="${file##*.}"
-    local date_regex='.*([0-9]{8}_[0-9]{6})([0-9]{3}|[-_.][0-9]+)?.*$'
-    local datetime=""
-    local subsectime=""
-    local idx=1
-    local idx_pad
 
     # If doing the check before generating the target I save the time of checking existing files
     # and extracting their sourcehash meta. This means the function must receive source_hash if use_db.
@@ -291,121 +287,12 @@ build_target() {
     # aka if force_overwrite ... delete existing target and remove entry from DB.
     use_db && have_a_target "$source_hash" && return 1
 
-    if is_image "$file"; then
-        ext="avif"
-    else
-        ext="mkv"
-    fi
+    # HEY!!! I'm missing no date_rename target creation! can I get it from get_unique_target???
+    # compare with old code... the difference may be the index.
+    # import mode = false and date rename = false, just return the string replaced target file name
+    # this means the get:unique_target needs to check import mode too.
 
-    target="${file/#$src/$dst}"
-    target="${target%.*}.${ext}"
-
-    if [ "$date_rename" = true ]; then
-
-        # basename
-        filename=${file##*/}
-
-        if [[ $filename =~ $date_regex ]]; then
-
-            datetime="${BASH_REMATCH[1]}"
-
-            if [[ -n "${BASH_REMATCH[2]}" ]]; then
-                datetime="${datetime}_${BASH_REMATCH[2]#[-_.]}"
-                # set conflict index to the same base 10 integer value as the filename ms suffix match
-                idx="$(( 10#${BASH_REMATCH[2]#[-_.]} ))"
-            elif is_image "$file"; then
-                # filename regex has not millisecond. Try to get it from metadata SubSecTime
-                subsectime="$(get_mstime "$file")"
-
-                # pad to 3 digits, and will pad idx accordingly.
-                if [ -n "$subsectime" ]; then
-                    idx="$subsectime"
-                    subsectime=$(printf "%03d" "$subsectime")
-                    datetime="${datetime}_${subsectime}"
-                fi
-            fi
-        fi
-
-        if [ -z "$datetime" ]; then
-
-            # try to get creation date from metadata if filename does not provide it
-            datetime="$(get_datetime "$file")"
-
-            if [[ -z "$datetime" ]]; then
-
-                if [[ "$filename" =~ ^([0-9]+)[-_][a-zA-Z]*([0-9]+) ]]; then
-
-                    # try to fetch filenames like 20200623-WG0023.mp4 to generate 20200623_000000_0023
-                    datetime="${BASH_REMATCH[1]}_000000_${BASH_REMATCH[2]}"
-
-                elif [[ "$filename" =~ ^([0-9]+)[-_] ]]; then
-
-                    # try to fetch filenames like 20200623-whatever.mp4 to generate 20200623_000000_1
-                    datetime="${BASH_REMATCH[1]}_000000_1"
-
-                else
-
-                    # if not filename date match use file mod time. On device should be accurate.
-                    datetime=$(date -r "$file" +"%Y%m%d_%H%M%S")
-
-                fi
-
-            else
-                # we got a valid metadata date... if is an image, try to get millisecond
-                if is_image "$file"; then
-
-                    subsectime="$(get_mstime "$file")"
-
-                    # pad to 3 digits, and will pad idx accordingly.
-                    if [ -n "$subsectime" ]; then
-                        idx="$subsectime"
-                        subsectime=$(printf "%03d" "$subsectime")
-                        datetime="${datetime}_${subsectime}"
-                    fi
-
-                fi
-            fi
-
-        fi
-
-        if [ "$datetime" ]; then
-            target="${dst}/${datetime:0:4}/${datetime:4:2}/${datetime}.${ext}"
-
-            while [ -f "$target" ]; do
-                # get the source hash embeed in the existing target's metadata
-                hash="$(get_source_hash "$target")"
-
-                # existing file is from same source video
-                [[ "$hash" == "$source_hash" ]] && break
-
-                # ensure consistency by padding all files to 3 digits (ms or repeat index)
-                idx_pad=$(printf "%03d" "$idx")
-
-                # db-less approach to prevent duplicates and filename conflicts based on source hash
-                target="${dst}/${datetime:0:4}/${datetime:4:2}/${datetime}_${idx_pad}.${ext}"
-                (( idx++ ))
-            done
-        fi
-
-    elif [ -n "$import_mode" ]; then
-
-        while [ -f "$target" ]; do
-            # get the source hash embeed in the existing target's metadata
-            hash="$(get_source_hash "$target")"
-
-            # existing file is from same source video
-            [[ "$hash" == "$source_hash" ]] && break
-
-            # ensure consistency by padding all files to 3 digits (ms or repeat index)
-            idx_pad=$(printf "%03d" "$idx")
-
-            # db-less approach to prevent duplicates and filename conflicts based on source hash
-            target="${file/#$src/$dst}"
-            target="${target%.*}_${idx_pad}.${ext}"
-            (( idx++ ))
-        done
-
-    fi
+    target="$(get_unique_target "$file" "$import_mode")"
 
     # if we arrive here and target exists, is because:
     #   date_rename is enabled and target has same sourchash (either normal or import mode),
@@ -414,7 +301,7 @@ build_target() {
     # so far only overwrite if allow_dupes=true
     [[ "$force_overwrite" = false && -f "$target" ]] && return 1
 
-    echo -n "$target"
+    printf '%s' "$target"
 
 }
 
@@ -637,6 +524,20 @@ convert_video() {
 
 }
 
+datetime_to_utc() {
+
+    local dt="$1"
+    local tz="$2"
+    local nt
+
+    nt="$(date -d "${dt:0:4}-${dt:4:2}-${dt:6:2} ${dt:9:2}:${dt:11:2}:${dt:13:2}${tz}" -u +"%Y%m%d_%H%M%S")"
+
+    [[ $nt =~ ^[0-9]{8}_[0-9]{6} ]] && dt="$nt"
+
+    printf '%s' "$dt"
+
+}
+
 db_init() {
 
     [[ -s "$db" ]] && return
@@ -687,7 +588,7 @@ edit_override() {
         ext_list)
             [[ $val =~ ^[[:space:]a-zA-Z0-9]+$ ]] && ok="true"
             ;;
-        auto_update|allow_dupes|date_rename|do_scroll|force_overwrite|move_sources|show_full_path)
+        auto_update|allow_dupes|date_rename|do_scroll|force_overwrite|move_sources|prefer_meta|prefer_utc|show_full_path)
             [[ "$val" = "true" || "$val" = "false" ]] && ok="true"
             ;;
         '')
@@ -757,7 +658,7 @@ format_version() {
 
 }
 
-get_datetime() {
+get_datetime_from_meta() {
     # uses global variable sys_tz
     # returns metadata datetime or empty string
 
@@ -766,10 +667,10 @@ get_datetime() {
 
     local file="$1"
     local datetime=""
+    local subsectime
     local tz=""
     local key
     local val
-    local D
     local metadata
     local fix_tz="false"
 
@@ -783,42 +684,139 @@ get_datetime() {
             GPSDateTime)
                 if [ -z "$datetime" ]; then
                     datetime="$val"
-                    fix_tz="true"
+                    [ "$prefer_utc" = false ] && fix_tz="true"
                 fi
                 ;;
             OffsetTimeOriginal|OffsetTime|OffsetTimeDigitized)
-                [ -z "$tz" ] && tz="$val"
+                [ -z "$tz" ] && [[ $val =~ ^[+-][0-9]{2}:[0-9]{2}$ ]] && tz="$val"
                 ;;
         esac
     done <<< "$metadata"
 
     if [[ "$datetime" != "00000000_000000" && $datetime =~ ^[0-9]{8}_[0-9]{6} ]]; then
 
-        # if file is video or data comes from gps... need to adjust timezone
-        [ "$fix_tz" = "false" ] && ! is_image "$file" && fix_tz="true"
+        if [ -n "$sys_tz" ]; then
+            # if file is video or data comes from gps it is in UTC format, so convert to sys tz unless utc preferred
+            [ "$fix_tz" = "false" ] && ! is_image "$file" && [ "$prefer_utc" = false ] && fix_tz="true"
 
-        if [[ -z "$tz" && "$fix_tz" = "true" ]]; then
-
-            # File does not have OffsetTime meta, recalculate date with system tz
-            # convert to YYYY-MM-DD HH:MM:SS to compute TZ diff
-            D="$datetime"
-            D=$(date -d "${D:0:4}-${D:4:2}-${D:6:2} ${D:9:2}:${D:11:2}:${D:13:2}${sys_tz}" -u +"%Y%m%d_%H%M%S")
-
-            # validate output
-            [[ $D =~ ^[0-9]{8}_[0-9]{6} ]] && datetime="$D"
-
+            if [[ -z "$tz" && "$fix_tz" = "true" ]]; then
+                # File does not have OffsetTime meta, recalculate date with system tz inverted polarity
+                datetime=$(datetime_to_utc "$datetime" "$sys_tz")
+            fi
         fi
 
-        printf "%s" "$datetime"
+        if [[ "$prefer_utc" = true && -n "$tz" ]]; then
+            datetime=$(datetime_to_utc "$datetime" "$tz")
+        fi
+
+        subsectime="$(get_mstime "$file")"
+        printf "%s" "${datetime}_${subsectime}"
 
     fi
 
 }
 
-get_mstime() {
-    # returns the value of the 1st 3 digits of SubSecTime rounder and as a decimal number, if present
+get_datetime(){
 
     local file="$1"
+    local prefer_meta="${2:-true}"
+    local datetime
+
+    if [ "$prefer_meta" = true ]; then
+
+        datetime="$(get_datetime_from_meta "$file")"
+
+        if [ -z "$datetime" ]; then
+            datetime="$(get_datetime_from_filename "$file")"
+        fi
+
+    else
+
+        datetime="$(get_datetime_from_filename "$file")"
+
+        if [ -z "$datetime" ]; then
+            datetime="$(get_datetime_from_meta "$file")"
+        fi
+
+    fi
+
+    [ -z "$datetime" ] && datetime="$(get_datetime_from_name_or_modtime "$file")"
+
+    printf '%s' "$datetime"
+
+}
+
+get_datetime_from_filename() {
+
+    local file="$1"
+    local basename
+    local date_regex='.*([0-9]{8}_[0-9]{6})([0-9]{3}|[-_.][0-9]+)?.*$'
+    local datetime=""
+    local subsectime="000"
+
+    basename="${file##*/}"
+
+    if [[ $basename =~ $date_regex ]]; then
+
+        datetime="${BASH_REMATCH[1]}"
+
+        # resort to meta subsectime first for suffixes like "_1"
+        if [[ -n "${BASH_REMATCH[2]}" && "${#BASH_REMATCH[2]}" -gt 2 ]]; then
+            subsectime="$(printf "%03d" "$(( 10#${BASH_REMATCH[2]#[-_.]} ))")"
+        else
+            subsectime="$(get_mstime "$file")"
+        fi
+
+        datetime="$(printf "%s_%03d" "$datetime" "$(( 10#$subsectime ))")"
+
+    fi
+
+    printf '%s' "$datetime"
+
+}
+
+get_datetime_from_name_or_modtime() {
+
+    # get partial date from filenames and as last resort, file mod time
+    # note: can return suffix of more or less than 3 digits
+
+    local file="$1"
+    local datetime
+    local basename
+
+    basename="${file##*/}"
+
+    # if not filename date match use file mod time. On device should be accurate. Specially smartphone.
+    datetime=$(date -r "$file" +"%Y%m%d_%H%M%S_000")
+
+    # try to fetch filenames like 20200623-WG0023.mp4 - pad to 3 digits, if more no problem either.
+    if [[ "$basename" =~ ^([0-9]+)[-_][a-zA-Z]*([0-9]+) ]]; then
+
+        # only use YMD filename match if is not the same YMD date as the file mod time
+        if [ "${datetime%%_*}" != "${BASH_REMATCH[1]}" ]; then
+            datetime="$(printf "%s_000000_%03d" "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")"
+        fi
+
+    # try to fetch filenames like 20200623-whatever.mp4 to generate 20200623_000000_000
+    elif [[ "$basename" =~ ^([0-9]+)[-_] ]]; then
+
+        if [ "${datetime%%_*}" != "${BASH_REMATCH[1]}" ]; then
+            datetime="${BASH_REMATCH[1]}_000000_000"
+        fi
+
+    fi
+
+    printf '%s' "$datetime"
+
+}
+
+get_mstime() {
+    # returns SubSecTime rounded to 3 digits or 000 if not present
+
+    local file="$1"
+    local basename
+    local subsectime
+    local ms_regex='.*[0-9]{8}_[0-9]{6}([0-9]{3}|[-_.][0-9]+).*$'
     local mstime=""
 
     if is_image "$file"; then
@@ -835,15 +833,27 @@ get_mstime() {
                 subsectime="$((10#${subsectime:0:3} + (10#${subsectime:3:1} >= 5 ? 1 : 0)))"
             fi
 
-            if [[ $((10#$subsectime)) -gt 0 ]]; then
-                # no padding here, return as an integer base 10 value
-                mstime="$subsectime"
-            fi
+            mstime="$subsectime"
+
         fi
 
     fi
 
-    printf "%s" "$mstime"
+    # try to get millisecond time from filename if we don't have from the meta
+    if [ -z "$mstime" ]; then
+
+        basename="${file##*/}"
+
+        if [[ $basename =~ $ms_regex ]]; then
+            mstime="$(( 10#${BASH_REMATCH[1]#[-_.]} ))"
+        else
+            mstime="000"
+        fi
+
+    fi
+
+    # return 3 digit padded index
+    printf "%03d" "$mstime"
 
 }
 
@@ -855,15 +865,12 @@ get_source_hash() {
     local user_comment
 
     if is_image "$file"; then
-
         user_comment=$(exiftool -UserComment -s -s -s "$file")
-        [[ $user_comment =~ $hash_regex ]] && hash=${BASH_REMATCH[1]}
-
     else
-
-        user_comment=$(ffmpeg -nostdin -hide_banner -i "$file" 2>&1)
-        [[ $user_comment =~ $hash_regex ]] && hash=${BASH_REMATCH[1]}
+        user_comment="$(exiftool -Comment -s -s -s "$file")"
     fi
+
+    [[ $user_comment =~ $hash_regex ]] && hash=${BASH_REMATCH[1]}
 
     echo -n "$hash"
 
@@ -873,7 +880,67 @@ get_sys_tz() {
     # sets global variable timezone adjusted for utc computation
 
     sys_tz=$(date +"%:z");
-    [ "${sys_tz:0:1}" = "+" ] && sys_tz="-${sys_tz:1}" || sys_tz="+${sys_tz:1}"
+
+    if [ -n "$sys_tz" ]; then
+        [ "${sys_tz:0:1}" = "+" ] && sys_tz="-${sys_tz:1}" || sys_tz="+${sys_tz:1}"
+    fi
+
+}
+
+get_unique_target() {
+    # uses global src, dst, date_rename, source_hash, prefer_meta
+
+    local file="$1"
+    local import_mode="$2"
+    local datetime
+    local target
+    local idx=1
+    local idx_pad
+    local hash
+    local ext
+
+    if is_image "$file"; then
+        ext="avif"
+    else
+        ext="mkv"
+    fi
+
+    target="${file/#$src/$dst}"
+
+    if [ "$date_rename" = "true" ]; then
+        datetime="$(get_datetime "$file" "$prefer_meta")"
+        target="${dst}/${datetime:0:4}/${datetime:4:2}/${datetime}.${ext}"
+        idx="${datetime##*_}"
+    else
+        target="${target%.*}.${ext}"
+    fi
+
+    # unique filenames only for date rename and import mode
+    if [ "$date_rename" = "true" ] || [ -n "$import_mode" ] ; then
+
+        while [ -f "$target" ]; do
+            # get the source hash embeed in the existing target's metadata
+            hash="$(get_source_hash "$target")"
+
+            # existing file is from same source video
+            [[ "$hash" == "$source_hash" ]] && break
+
+            # ensure consistency by padding all files to 3 digits (ms or repeat index)
+            idx_pad=$(printf "%03d" "$idx")
+
+            # db-less approach to prevent duplicates and filename conflicts based on source hash
+            if [ "$date_rename" = "true" ]; then
+                target="${dst}/${datetime:0:4}/${datetime:4:2}/${datetime:0:15}_${idx_pad}.${ext}"
+            else
+                target="${file/#$src/$dst}"
+                target="${target%.*}_${idx_pad}.${ext}"
+            fi
+            (( idx++ ))
+        done
+
+    fi
+
+    printf '%s' "$target"
 
 }
 
@@ -1056,7 +1123,7 @@ install_deps() {
         [ "$do_keygen" = "true" ] && maybe_ssh_keygen="openssh-keygen"
 
         if [ "$(whoami 2>/dev/null)" = "root" ] || command -v "sudo" > /dev/null; then
-            apk add --no-cache curl exiftool ffmpeg imagemagick libavif libheif sqlite xxhash "$maybe_ssh_keygen"
+            apk add --no-cache bash coreutils curl exiftool ffmpeg imagemagick libavif libheif sqlite xxhash "$maybe_ssh_keygen"
         else
             msg 'no_sudo_command'
         fi
@@ -1187,7 +1254,7 @@ maybe_auto_update(){
     # uses global update_interval
 
     local days
-    local update_file="$HOME/.config/desnublado/desnublado.update_check"
+    local update_file="$config_path/desnublado.update_check"
 
     [ "$auto_update" = "false" ] && return
 
@@ -1520,8 +1587,8 @@ set_lang() {
 
 set_lock_file() {
 
-    if [ ! -d "$HOME/.config/desnublado" ]; then
-        mkdir -p "$HOME/.config/desnublado" || error_exit "Cannot create dir: $HOME/.config/desnublado"
+    if [ ! -d "$config_path" ]; then
+        mkdir -p "$config_path" || error_exit "Cannot create dir: $config_path"
     fi
 
     exec 9>"$lock_file"

@@ -1,0 +1,73 @@
+LANG version="2026.09.21"
+
+es=lang=Español
+es=aborted=Proceso interrumpido...
+es=allow_dupes=Permitir contenido duplicado? (mismo video / foto con distinto nombre de archivo)
+es=already_running=Desnublado ya se está ejecutando. Saliendo...
+es=ask_autostart=Añadir este programa a .bashrc para que empiece de forma automática al lanzar %s? Esta es la opción recomendada si instalaste %s solo para utilizar este programa.
+es=auto_update=Actualizar desnublado de forma automática?
+es=calc_hash_error=No se puede computar el hash del archivo!
+es=checking_updates=Buscando actualizaciones de %s ...
+es=closing_in_seconds=Cerrando en %s segundos
+es=computing_hash=Computando el hash...
+es=continue_no_install=Continuar sin instalar
+es=conversion_error=Error en la conversión!
+es=conversion_errors=Errores: %s
+es=converting_img=Procesando imagen...
+es=date_rename=Reorganizar los archivos convertidos en carpetas año/mes y renombrar con fecha hora y milisegundo? por ejemplo: i.e. 2020/01/20200123_012345_123.jpg
+es=default_setting=(Valor predeterminado)
+es=disable=Desactivar
+es=done=Completado!
+es=done_install=Instalación completada!
+es=done_termux=Puedes salir escribiendo "exit" ahora. La próxima vez que abras %s el programa empezará a crear versiones pequeñas de tus fotos y videos.
+es=do_scroll=Mostrar el historial completo de archivos procesados? Cuando está desactivado, el historial se limita a la cantidad visible en la pantalla.
+es=download_error=Error en la descarga!
+es=downloading_ffmpeg=Descargando ffmpeg...
+es=dst_not_exist=La carpeta destino no existe o no se puede escribir:\n%s
+es=enable=Activar
+es=error_checking_remote_file=Error al intentar comprobar archivo remoto. ¿Hay conexión de red?
+es=error_download_translations=No se pudo descargar el archivo de traducciones!
+es=error_invalid_signature=La versión descargada no contiene una firma digital válida. Cancelando actualización!
+es=exiftool_missing=exiftool es necesario para copiar los metadatos de fecha y GPS!
+es=ffmpeg_missing=ffmpeg es necesario para procesar los videos!
+es=file_deleted=Archivo borrado!
+es=file_no_meta_hash=El archivo no tiene source hash meta...
+es=file_repeated=Contenido repetido!
+es=import_error=Error al importar, no se puede mover el archivo!
+es=installing_packages=Instalando programas requeridos...
+es=install_packages=Instalar programas
+es=install_required_packages=Instalar los programas requeridos? (curl, exiftool, ffmpeg, imagemagick, sqlite3, xxhash, xz-utils)
+es=invalid_option=Opción inválida! Inténtalo de nuevo.
+es=iterating=\033[1m%s: %d archivos\033[0m
+es=low_space=Poco espacio libre: %'dM
+es=magick_missing=magick (de imagemagick) es necesario para convertir imágenes!
+es=move_sources=Mover las fotos y videos originales a la carpeta Camera_done una vez procesados?
+es=move_src_error=No se pudo mover el archivo origen a la carpeta done!
+es=move_tmp_error=No se pudo mover el archivo temporal al destino final!
+es=no_new_version_available=Ya tienes la versión más reciente disponible.
+es=no_ssh_keygen=El programa ssh-keygen es necesario para verificar la firma digital de las actualizaciones de desnublado!
+es=no_sudo_command=El comando sudo no está disponible!
+es=not_a_valid_option=Opción no válida
+es=not_a_valid_value=Valor no válida
+es=processed=Procesados: %s
+es=rebuilding_database=Reconstruyendo base de datos...
+es=select_language=Escoge idioma:
+es=show_full_path=Mostrar la ruta completa de todos los archivos en lugar de la parte relativa a su carpeta origen / destino?
+es=skip_existing_target=Archivo ya convertido...
+es=skipped=Saltados: %s
+es=sqlite_create_error=sqlite3 error creando base de datos!
+es=sqlite_missing=sqlite3 es necesario para las funciones de base de datos.
+es=sqlite_query_error=sqlite3 error en consulta: %s
+es=src_done_not_exist=La carpeta de orígenes procesados no existe o no se puede escribir:\n%s
+es=src_extra_done_not_exist=La carpeta de orígenes extra procesados no existe o no se puede escribir:\n%s
+es=src_extra_dst=La carpeta de destino extra no existe o no se puede escribir:\n%s
+es=src_not_exist=La carpeta origen no existe:\n
+es=starting_in_seconds=Iniciando en %s segundos
+es=termux_storage_info=Este programa necesita acceso a la carpeta DCIM para poder procesar las fotos y videos.
+es=tmp_not_writable=La carpeta temporal no existe o no se puede escribir:\n
+es=unknown_command=Comando desconocido
+es=unsupported_distro=Distribución no soportada! Tienes que instalar los siguientes programas de forma manual: curl, exiftool, ffmpeg, imagemagick, sqlite3, ssh-keygen, xxhash, xz-utils
+es=updating_to_new_version=Actualizando %s a la versión: %s
+es=video_eta=%s.%ss de %ss (%s%%) eta: %s
+es=welcome=Bienvenido al instalador de desnublado\n\nEste script crea versiones pequeñas de tus fotos y videos para que puedas tener acceso a ellos en todo momento desde tu dispositivo, ocupando una fracción del espacio original y permitiéndote mover las fotos y videos originales a otro medio de almacenamiento como un pendrive, disco duro o computadora de sobremesa sin perder acceso a ellos.
+es=xxh128sum_missing=El comando xxh128sum del paquete xxhash es necesario para computar los hashes

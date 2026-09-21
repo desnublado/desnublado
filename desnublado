@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-readonly version="2026.09.18"
+readonly version="2026.09.21"
 
 # desnublado - A minimal microBKP implementation to run on device.
 # Created by solyplaya and released into the Public Domain. See footer for details.
@@ -29,6 +29,7 @@ src_import="${DNBL_SRC_IMPORT:-$base_path/Camera_import}"
 dst="${DNBL_DST:-$base_path/Camera_mini}"
 tmp="${DNBL_TMP:-${TMPDIR:-$HOME}}"
 lock_file="${DNBL_LOCK_FILE:-$config_path/.desnublado.lock}"
+lang_file="${DNBL_LANG_FILE:-$config_path/desnublado.lang}"
 rebuild_flag="${DNBL_REBUILD_FLAG:-$base_path/desnublado.rebuild}"
 db="${DNBL_DB:-$config_path/desnublado.db}"
 min_free_mb="${DNBL_MIN_FREE_MB:-2048}" # target filesystem must have this free space to proceed (in megabytes)
@@ -63,8 +64,11 @@ download_mirrors=(
 interactive="true"
 
 # multilingual support based on LANG env
-lang=""
-lang_list=("en" "es")
+lang=''
+lang_list=(en)
+lang_version='0'
+declare -A lang_name
+declare -A messages
 
 # shellcheck disable=SC2034
 declare -A msg_en=(
@@ -74,7 +78,7 @@ declare -A msg_en=(
     [ask_autostart]="Add this program to .bashrc so it starts automatically when you start %s? This is the recommended option if you installed %s only to use this program."
     [auto_update]="Enable automatic updates?"
     [calc_hash_error]="Cannot compute file hash!"
-    [checking_updates]="Checking for updates..."
+    [checking_updates]="Checking for updates of %s ..."
     [closing_in_seconds]="Closing in %s seconds"
     [computing_hash]="Computing file hash..."
     [continue_no_install]="Continue without installation"
@@ -85,14 +89,15 @@ declare -A msg_en=(
     [default_setting]="(Default)"
     [disable]="Disable"
     [done]="Done!"
-    [done]="Installation is completed!"
+    [done_install]="Installation is completed!"
     [done_termux]="You can type \"exit\" now. The next time you open %s it will start creating small versions of your photos and videos."
     [do_scroll]="Keep scrollable history of processed files? When disabled history is limited to what fits in the screen."
     [download_error]="Error downloading!"
     [downloading_ffmpeg]="Downloading ffmpeg..."
-    [dst_not_exist]="Destination directory does not exist or is not writable:\n${dst}"
+    [dst_not_exist]="Destination directory does not exist or is not writable:\n%s"
     [enable]="Enable"
     [error_checking_remote_file]="Error checking remote file! Is there a network connection?"
+    [error_download_translations]="Could not download the translations file!"
     [error_invalid_signature]="The downloaded version has no valid signature. Not updating!"
     [exiftool_missing]="exiftool program is required to copy GPS and date metadata!"
     [ffmpeg_missing]="ffmpeg program is required to process video files!"
@@ -106,7 +111,7 @@ declare -A msg_en=(
     [invalid_option]="Invalid option! Please try again."
     [iterating]="\033[1m%s: %d files\033[0m"
     [low_space]="Low disk space: %'dM"
-    [magic_missing]="magick (from imagemagick) is required to convert images!"
+    [magick_missing]="magick (from imagemagick) is required to convert images!"
     [move_sources]="Move converted media to Camera_done folder?"
     [move_src_error]="Cannot move source file to done folder!"
     [move_tmp_error]="Cannot move tmp file to target!"
@@ -124,92 +129,19 @@ declare -A msg_en=(
     [sqlite_create_error]="sqlite3 database creation error!"
     [sqlite_missing]="sqlite3 binary is required to use DB functionality!"
     [sqlite_query_error]="sqlite3 database query error!: %s"
-    [src_done_not_exist]="Processed sources directory does not exist or is not writable:\n${src_done}"
-    [src_extra_done_not_exist]="Processed extra sources directory does not exist or is not writable:\n${src_extra_done}"
-    [src_extra_dst]="Extra sources destination directory does not exist or is not writable:\n${src_extra_dst}"
-    [src_not_exist]="Source directory does not exist:\n${src}"
+    [src_done_not_exist]="Processed sources directory does not exist or is not writable:\n%s"
+    [src_extra_done_not_exist]="Processed extra sources directory does not exist or is not writable:\n%s"
+    [src_extra_dst]="Extra sources destination directory does not exist or is not writable:\n%s"
+    [src_not_exist]="Source directory does not exist:\n%s"
     [starting_in_seconds]="Starting in %s seconds"
     [termux_storage_info]="This program needs access to your DCIM folder in order to process photos and videos."
-    [tmp_not_writable]="Temp directory does not exist or is not writable:\n${tmp}"
+    [tmp_not_writable]="Temp directory does not exist or is not writable:\n%s"
     [unknown_command]="Unknown command"
     [unsupported_distro]="Unsupported distro! You need to install the following required packages manually: curl, exiftool, ffmpeg, imagemagick, sqlite3, ssh-keygen, xxhash, xz-utils"
-    [updating_to_new_version]="Updating to new version: %s"
+    [updating_to_new_version]="Updating %s to version: %s"
     [video_eta]="%s.%ss of %ss (%s%%) eta: %s"
     [welcome]="Welcome to the installer of desnublado\n\nThis script creates small versions of your photos and videos so you can have access to them at all times from your device, taking a fraction of their original space and allowing you to move the original images to another storage medium like a pendrive, hard drive or desktop computer without loosing access to them."
     [xxh128sum_missing]="xxh128sum command from xxhash is required to compute media hashes"
-)
-
-# shellcheck disable=SC2034
-declare -A msg_es=(
-    [aborted]="Proceso interrumpido..."
-    [allow_dupes]="Permitir contenido duplicado? (mismo video / foto con distinto nombre de archivo)"
-    [already_running]="Desnublado ya se está ejecutando. Saliendo..."
-    [ask_autostart]="Añadir este programa a .bashrc para que empiece de forma automática al lanzar %s? Esta es la opción recomendada si instalaste %s solo para utilizar este programa."
-    [auto_update]="Actualizar desnublado de forma automática?"
-    [calc_hash_error]="No se puede computar el hash del archivo!"
-    [checking_updates]="Buscando actualizaciones..."
-    [closing_in_seconds]="Cerrando en %s segundos"
-    [computing_hash]="Computando el hash..."
-    [continue_no_install]="Continuar sin instalar"
-    [conversion_error]="Error en la conversión!"
-    [conversion_errors]="Errores: %s"
-    [converting_img]="Procesando imagen..."
-    [date_rename]="Reorganizar los archivos convertidos en carpetas año/mes y renombrar con fecha hora y milisegundo? por ejemplo: i.e. 2020/01/20200123_012345_123.jpg"
-    [default_setting]="(Valor predeterminado)"
-    [disable]="Desactivar"
-    [done]="Completado!"
-    [done]="Instalación completada!"
-    [done_termux]="Puedes salir escribiendo \"exit\" ahora. La próxima vez que abras %s el programa empezará a crear versiones pequeñas de tus fotos y videos."
-    [do_scroll]="Mostrar el historial completo de archivos procesados? Cuando está desactivado, el historial se limita a la cantidad visible en la pantalla."
-    [download_error]="Error en la descarga!"
-    [downloading_ffmpeg]="Descargando ffmpeg..."
-    [dst_not_exist]="La carpeta destino no existe o no se puede escribir:\n${dst}"
-    [enable]="Activar"
-    [error_checking_remote_file]="Error al intentar comprobar archivo remoto. ¿Hay conexión de red?"
-    [error_invalid_signature]="La versión descargada no contiene una firma digital válida. Cancelando actualización!"
-    [exiftool_missing]="exiftool es necesario para copiar los metadatos de fecha y GPS!"
-    [ffmpeg_missing]="ffmpeg es necesario para procesar los videos!"
-    [file_deleted]="Archivo borrado!"
-    [file_no_meta_hash]="El archivo no tiene source hash meta..."
-    [file_repeated]="Contenido repetido!"
-    [import_error]="Error al importar, no se puede mover el archivo!"
-    [installing_packages]="Instalando programas requeridos..."
-    [install_packages]="Instalar programas"
-    [install_required_packages]="Instalar los programas requeridos? (curl, exiftool, ffmpeg, imagemagick, sqlite3, xxhash, xz-utils)"
-    [invalid_option]="Opción inválida! Inténtalo de nuevo."
-    [iterating]="\033[1m%s: %d archivos\033[0m"
-    [low_space]="Poco espacio libre: %'dM"
-    [magic_missing]="magick (de imagemagick) es necesario para convertir imágenes!"
-    [move_sources]="Mover las fotos y videos originales a la carpeta Camera_done una vez procesados?"
-    [move_src_error]="No se pudo mover el archivo origen a la carpeta done!"
-    [move_tmp_error]="No se pudo mover el archivo temporal al destino final!"
-    [no_new_version_available]="Ya tienes la versión más reciente disponible."
-    [no_ssh_keygen]="El programa ssh-keygen es necesario para verificar la firma digital de las actualizaciones de desnublado!"
-    [no_sudo_command]="El comando sudo no está disponible!"
-    [not_a_valid_option]="Opción no válida"
-    [not_a_valid_value]="Valor no válida"
-    [processed]="Procesados: %s"
-    [rebuilding_database]="Reconstruyendo base de datos..."
-    [select_language]="Escoge idioma:"
-    [show_full_path]="Mostrar la ruta completa de todos los archivos en lugar de la parte relativa a su carpeta origen / destino?"
-    [skip_existing_target]="Archivo ya convertido..."
-    [skipped]="Saltados: %s"
-    [sqlite_create_error]="sqlite3 error creando base de datos!"
-    [sqlite_missing]="sqlite3 es necesario para las funciones de base de datos."
-    [sqlite_query_error]="sqlite3 error en consulta: %s"
-    [src_done_not_exist]="La carpeta de orígenes procesados no existe o no se puede escribir:\n${src_done}"
-    [src_extra_done_not_exist]="La carpeta de orígenes extra procesados no existe o no se puede escribir:\n${src_extra_done}"
-    [src_extra_dst]="La carpeta de destino extra no existe o no se puede escribir:\n${src_extra_dst}"
-    [src_not_exist]="La carpeta origen no existe:\n${src}"
-    [starting_in_seconds]="Iniciando en %s segundos"
-    [termux_storage_info]="Este programa necesita acceso a la carpeta DCIM para poder procesar las fotos y videos."
-    [tmp_not_writable]="La carpeta temporal no existe o no se puede escribir:\n${tmp}"
-    [unknown_command]="Comando desconocido"
-    [unsupported_distro]="Distribución no soportada! Tienes que instalar los siguientes programas de forma manual: curl, exiftool, ffmpeg, imagemagick, sqlite3, ssh-keygen, xxhash, xz-utils"
-    [updating_to_new_version]="Actualizando a la versión: %s"
-    [video_eta]="%s.%ss de %ss (%s%%) eta: %s"
-    [welcome]="Bienvenido al instalador de desnublado\n\nEste script crea versiones pequeñas de tus fotos y videos para que puedas tener acceso a ellos en todo momento desde tu dispositivo, ocupando una fracción del espacio original y permitiéndote mover las fotos y videos originales a otro medio de almacenamiento como un pendrive, disco duro o computadora de sobremesa sin perder acceso a ellos."
-    [xxh128sum_missing]="El comando xxh128sum del paquete xxhash es necesario para computar los hashes"
 )
 
 declare -A options=(
@@ -562,6 +494,71 @@ db_query() {
 
 }
 
+download_and_verify() {
+    # uses global lang_version, config_path
+
+    local file="$1"
+    local base_url
+    local new_version
+    local new_v
+    local old_v
+    local public_key='desnublado@release ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILRUOIit/NU6usSafcc+mIxPlCjpCidS65+k7qY5MuCd solyplaya'
+    local force='false'
+
+    # prevent random files
+    [[ ' desnublado desnublado.lang ' == *" $file "* ]] || file='desnublado'
+
+    [ "${2:-}" = "--force" ] && force='true'
+
+    if ! command -v ssh-keygen > /dev/null; then
+        install_deps 'ssh-keygen'
+        ! command -v ssh-keygen > /dev/null && return 1
+    fi
+
+    shuffle_mirrors
+    msg 'checking_updates' "$file"
+    for base_url in "${download_mirrors[@]}"; do
+        new_version="$(curl -fsSL "$base_url/$file" | sed -En 's/^(LANG|readonly) version="([.0-9]+)".*/\2/p')"
+        [ -n "$new_version" ] && break
+    done
+
+    if [ -z "$new_version" ]; then
+        error_msg "$(msg 'error_checking_remote_file')"
+        return 1
+    else
+        new_v="$(format_version "$new_version")";
+        [ "$file" = 'desnublado' ] && old_v="$version" || old_v="$lang_version"
+
+        if [ "$force" = true ] || [ "$new_v" -gt "$(format_version "$old_v")" ]; then
+            msg 'updating_to_new_version' "$file" "$new_version"
+
+            curl -fsSL -o "$tmp/.${file}.new" "${base_url}/${file}" || { error_msg "$(msg 'error_checking_remote_file')"; return 1; }
+            curl -fsSL -o "$tmp/.${file}.sig" "${base_url}/${file}.sig" || { error_msg "$(msg 'error_checking_remote_file')"; return 1; }
+
+            echo "$public_key" > "$tmp/.desnublado.pub"
+
+            if ssh-keygen -Y verify -f "$tmp/.desnublado.pub" -I desnublado@release -n file -s "$tmp/.${file}.sig" < "$tmp/.${file}.new" > /dev/null; then
+                if [ "$file" = 'desnublado' ]; then
+                    install_desnublado "$tmp/.${file}.new"
+                else
+                    mv "$tmp/.${file}.new" "$config_path/$file"
+                fi
+            else
+                error_msg "$(msg 'error_invalid_signature')"
+                return 1
+            fi
+
+            rm -f "$tmp"/.desnublado.*
+            return 0
+
+        else
+            msg 'no_new_version_available'
+            return 0
+        fi
+    fi
+
+}
+
 edit_override() {
 
     local opt="${1:-}"
@@ -584,6 +581,9 @@ edit_override() {
         min_free_mb)
             # prevent octal params. min 2 digits, aka 10mb
             [[ $val =~ ^[1-9][0-9]+$ ]] && ok="true"
+            ;;
+        lang)
+            [[ $val =~ ^[a-z]{2}(-[a-z]{2}){0,1}$ ]] && ok="true"
             ;;
         ext_list)
             [[ $val =~ ^[[:space:]a-zA-Z0-9]+$ ]] && ok="true"
@@ -1264,8 +1264,8 @@ maybe_auto_update(){
         if [ "$days" -ge 1 ]; then
             touch "$update_file"
             update_desnublado
+            echo
         fi
-
     else
         touch "$update_file"
     fi
@@ -1534,22 +1534,113 @@ save_override() {
 
 }
 
-select_lang(){
-    # uses global lang
+populate_langs(){
 
-    local opt
+    # uses global lang_list, lang_version
+    local lg_code
+    local lg_name
+    local line
+
+    if [ -f "$lang_file" ]; then
+        lang_version="$(sed -n 's/^LANG version="\([.0-9]\+\)".*/\1/p' "$lang_file")"
+
+        while IFS='' read -r line; do
+            lg_code="${line%%=*}"
+            lg_name="${line#*=}"
+            lg_name="${lg_name#*=}"
+            lang_name["$lg_code"]="$lg_name"
+        done < <({ grep -E "^[a-z]{2}(-[a-z]{2}){0,1}=lang=" "$lang_file"; printf '%s\n' "en=lang=English"; } | sort | uniq)
+
+        # shellcheck disable=SC2207
+        lang_list=($(printf '%s\n' "${!lang_name[@]}" | sort -r))
+
+    fi
+
+}
+
+load_lang(){
+
+    local lang="$1"
+    local key val line
+
+    if [ "$lang" = 'en' ]; then
+        for key in "${!msg_en[@]}"; do
+            messages["$key"]="${msg_en[$key]}"
+        done
+    else
+
+        if [ -f "$lang_file" ]; then
+            # repopulate lang variables by overwritting existing ones
+            while IFS= read -r line; do
+
+                key="${line#*=}"
+                val="${key#*=}"
+                key="${key%%=*}"
+
+                messages["$key"]="$val"
+
+            done < <(grep -- "^$lang=" "$lang_file")
+        fi
+    fi
+
+}
+
+select_lang(){
+    # uses global lang_list lang_name
+
+    local i=0
+    local lang_index=()
+
+    # is array of langs = 1, then no langs loaded, we need to laod more.
+    if [ "${#lang_list[@]}" -eq 1 ]; then
+        lang_name[en]='English'
+        lang_name[xx]='Choose another'
+        select_lang_list
+
+        if [ "$lang" = 'xx' ]; then
+            unset 'lang_name[xx]';
+            update_translations || error_exit "$(msg 'error_download_translations')"
+            populate_langs
+            select_lang_list
+        fi
+
+    else
+        select_lang_list
+    fi
+
+    load_lang "$lang"
+
+}
+
+select_lang_list() {
+
+    local i=0
+    local lang_index=()
+    local opt key
+    local ms
+    local default=''
 
     msg 'select_language'
 
-    select opt in "${lang_list[@]}"; do
+    # sort array and have an index to point to it...
+    for key in $(echo "${!lang_name[@]}" | tr ' ' '\n' | sort); do
+        (( i++))
+        lang_index[i]="$key"
+        [ "$lang" = "$key" ] && { ms=' *'; default="$key"; } || ms=''
+        echo "$i) $key (${lang_name[$key]})${ms}"
+    done
 
-        if in_array "$opt" "${lang_list[@]}"; then
-            lang="$opt"
-            declare -ng messages="msg_${lang}"
+    while true; do
+        read -r -n 3 -p '#? ' opt
+
+        if [[ $opt =~ ^[1-9]+$ && -v 'lang_index["$opt"]' ]]; then
+            lang="${lang_index["$opt"]}"
+            break
+        elif [[ -z "$opt" && -n "$default" ]]; then
+            # we have a valid default
             break
         fi
-
-        msg 'invalid_option'
+        echo 'invalid_option'
     done
 
 }
@@ -1565,7 +1656,6 @@ select_options() {
     done
 
     save_override "lang" "$lang"
-    cat "$override_file"
 
 }
 
@@ -1574,14 +1664,16 @@ set_lang() {
     # sets global variable lang based on ENV variable LANG
     local LANG="${lang:-${DNBL_LANG:-${LANG:-en}}}"
 
+    populate_langs
+    lang=''
+
     for lang_code in "${lang_list[@]}"; do
-        # match things like en-us as en
-        [[ "$LANG" == "$lang_code"* ]] && lang="$lang_code"
+        # list sorted in reverse order so "en-us" comes before "en"
+        [[ "$LANG" == "$lang_code"* ]] && { lang="$lang_code"; break; }
     done
 
-    [ -z "$lang" ] && lang="en"
-
-    declare -ng messages="msg_${lang}"
+    [ -z "$lang" ] && lang='en'
+    load_lang "$lang"
 
 }
 
@@ -1668,7 +1760,7 @@ setup_desnublado() {
     fi
 
     echo
-    msg 'done'
+    msg 'done_install'
     echo
 
 }
@@ -1769,57 +1861,14 @@ uninstall_autostart() {
 
 update_desnublado() {
 
-    local base_url
-    local new_version
-    local new_v
-    local old_v
-    local public_key='desnublado@release ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILRUOIit/NU6usSafcc+mIxPlCjpCidS65+k7qY5MuCd solyplaya'
-    local force="false"
+    download_and_verify 'desnublado' "$@"
+    [ -f "$lang_file" ] && update_translations "$@"
 
-    [ "${1:-}" = "--force" ] && force="true"
+}
 
-    if ! command -v ssh-keygen > /dev/null; then
-        install_deps "ssh-keygen"
-        ! command -v ssh-keygen > /dev/null && return
-    fi
+update_translations() {
 
-    shuffle_mirrors
-    msg 'checking_updates'
-
-    for base_url in "${download_mirrors[@]}"; do
-        new_version="$(curl -fsSL -H 'Range: bytes=0-63' "${base_url}/desnublado" | sed -n 's/^readonly version="\([.0-9]\+\)".*/\1/p')"
-        [ -n "$new_version" ] && break
-    done
-
-    if [ -z "$new_version" ]; then
-        error_msg "$(msg 'error_checking_remote_file')"
-        return 1
-    else
-        new_v="$(format_version "$new_version")";
-        old_v="$(format_version "$version")";
-
-        if [ "$force" = "true" ] || [ "$new_v" -gt "${old_v}" ]; then
-            msg 'updating_to_new_version' "$new_version"
-
-            curl -fsSL -o "$tmp/.desnublado.new" "${base_url}/desnublado" || error_exit "$(msg 'error_checking_remote_file')"
-            curl -fsSL -o "$tmp/.desnublado.sig" "${base_url}/desnublado.sig" || error_exit "$(msg 'error_checking_remote_file')"
-
-            echo "$public_key" > "$tmp/.desnublado.pub"
-
-            if ssh-keygen -Y verify -f "$tmp/.desnublado.pub" -I desnublado@release -n file -s "$tmp/.desnublado.sig" < "$tmp/.desnublado.new" > /dev/null; then
-                install_desnublado "$tmp/.desnublado.new"
-            else
-                error_msg "$(msg 'error_invalid_signature')"
-                return 1
-            fi
-
-            rm -f "$tmp"/.desnublado.*
-
-        else
-            msg 'no_new_version_available'
-            return 0
-        fi
-    fi
+    download_and_verify 'desnublado.lang' "$@"
 
 }
 
@@ -1859,21 +1908,21 @@ validate_paths() {
 
     done
 
-    [[ -z "$src" || ! -d "$src" ]] && error_ret "$(msg 'src_not_exist')"
+    [[ -z "$src" || ! -d "$src" ]] && error_ret "$(msg 'src_not_exist' "$src")"
     [[ "$move_sources" = true && -n "$src_done" && ! -d "$src_done" ]] && mkdir -p -- "$src_done" 2>/dev/null
-    [[ "$move_sources" = true &&  ( -z "$src_done" || ! -d "$src_done" || ! -w "$src_done" ) ]] && error_ret "$(msg 'src_done_not_exist')"
+    [[ "$move_sources" = true &&  ( -z "$src_done" || ! -d "$src_done" || ! -w "$src_done" ) ]] && error_ret "$(msg 'src_done_not_exist' "$src_done")"
 
     [[ -n "$dst" && ! -d "$dst" ]] && mkdir -p -- "$dst" 2>/dev/null
-    [[ -z "$dst" || ! -d "$dst" || ! -w "$dst" ]] && error_ret "$(msg 'dst_not_exist')"
-    [[ -z "$tmp" || ! -d "$tmp" || ! -w "$tmp" ]] && error_ret "$(msg 'tmp_not_writable')"
+    [[ -z "$dst" || ! -d "$dst" || ! -w "$dst" ]] && error_ret "$(msg 'dst_not_exist' "$dst")"
+    [[ -z "$tmp" || ! -d "$tmp" || ! -w "$tmp" ]] && error_ret "$(msg 'tmp_not_writable' "$tmp")"
 
     [[ -n "$src_extra_dst" && ! -d "$src_extra_dst" ]] && mkdir -p -- "$src_extra_dst" 2>/dev/null
-    [[ -n "$src_extra_dst" && ( ! -d "$src_extra_dst" || ! -w "$src_extra_dst" ) ]] && error_ret "$(msg 'src_extra_dst')"
+    [[ -n "$src_extra_dst" && ( ! -d "$src_extra_dst" || ! -w "$src_extra_dst" ) ]] && error_ret "$(msg 'src_extra_dst' "$src_extra_dst")"
 
     # We only check the extra if it is set and dir exists
     if [[ -n "$src_extra" && -d "$src_extra" ]]; then
         [[ "$move_sources" = true && -n "$src_extra_done" && ! -d "$src_extra_done" ]] && mkdir -p -- "$src_extra_done" 2>/dev/null
-        [[ "$move_sources" = true && -n "$src_extra_done" &&  ( ! -d "$src_extra_done" || ! -w "$src_extra_done" ) ]] && error_ret "$(msg 'src_extra_done_not_exist')"
+        [[ "$move_sources" = true && -n "$src_extra_done" &&  ( ! -d "$src_extra_done" || ! -w "$src_extra_done" ) ]] && error_ret "$(msg 'src_extra_done_not_exist' "$src_extra_done")"
     fi
 
     return $convert_return_code

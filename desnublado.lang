@@ -1,4 +1,4 @@
-LANG version="2026.09.21"
+LANG version="2026.09.22"
 
 es=lang=Español
 es=aborted=Proceso interrumpido...
@@ -18,7 +18,7 @@ es=date_rename=Reorganizar los archivos convertidos en carpetas año/mes y renom
 es=default_setting=(Valor predeterminado)
 es=disable=Desactivar
 es=done=Completado!
-es=done_install=Instalación completada!
+es=done_install=Instalación completada! Puedes salir ahora deslizando el dedo desde la parte superior de la pantalla para mostrar la notificación de Termux y tocando EXIT.
 es=done_termux=Puedes salir escribiendo "exit" ahora. La próxima vez que abras %s el programa empezará a crear versiones pequeñas de tus fotos y videos.
 es=do_scroll=Mostrar el historial completo de archivos procesados? Cuando está desactivado, el historial se limita a la cantidad visible en la pantalla.
 es=download_error=Error en la descarga!

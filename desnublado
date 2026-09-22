@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-readonly version="2026.09.21"
+readonly version="2026.09.22"
 
 # desnublado - A minimal microBKP implementation to run on device.
 # Created by solyplaya and released into the Public Domain. See footer for details.
@@ -89,7 +89,7 @@ declare -A msg_en=(
     [default_setting]="(Default)"
     [disable]="Disable"
     [done]="Done!"
-    [done_install]="Installation is completed!"
+    [done_install]="Installation is completed! You can pull down from the top of the screen to see the Termux notification and tap EXIT."
     [done_termux]="You can type \"exit\" now. The next time you open %s it will start creating small versions of your photos and videos."
     [do_scroll]="Keep scrollable history of processed files? When disabled history is limited to what fits in the screen."
     [download_error]="Error downloading!"
@@ -504,13 +504,15 @@ download_and_verify() {
     local old_v
     local public_key='desnublado@release ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILRUOIit/NU6usSafcc+mIxPlCjpCidS65+k7qY5MuCd solyplaya'
     local force='false'
+    local verify_sig='true'
 
     # prevent random files
     [[ ' desnublado desnublado.lang ' == *" $file "* ]] || file='desnublado'
 
     [ "${2:-}" = "--force" ] && force='true'
+    [ "${2:-}" = "--skip-verify" ] && verify_sig='false'
 
-    if ! command -v ssh-keygen > /dev/null; then
+    if [ "$verify_sig" = true ] && ! command -v ssh-keygen > /dev/null; then
         install_deps 'ssh-keygen'
         ! command -v ssh-keygen > /dev/null && return 1
     fi
@@ -533,19 +535,21 @@ download_and_verify() {
             msg 'updating_to_new_version' "$file" "$new_version"
 
             curl -fsSL -o "$tmp/.${file}.new" "${base_url}/${file}" || { error_msg "$(msg 'error_checking_remote_file')"; return 1; }
-            curl -fsSL -o "$tmp/.${file}.sig" "${base_url}/${file}.sig" || { error_msg "$(msg 'error_checking_remote_file')"; return 1; }
 
-            echo "$public_key" > "$tmp/.desnublado.pub"
+            if [ "$verify_sig" = true ]; then
+                curl -fsSL -o "$tmp/.${file}.sig" "${base_url}/${file}.sig" || { error_msg "$(msg 'error_checking_remote_file')"; return 1; }
+                echo "$public_key" > "$tmp/.desnublado.pub"
 
-            if ssh-keygen -Y verify -f "$tmp/.desnublado.pub" -I desnublado@release -n file -s "$tmp/.${file}.sig" < "$tmp/.${file}.new" > /dev/null; then
-                if [ "$file" = 'desnublado' ]; then
-                    install_desnublado "$tmp/.${file}.new"
-                else
-                    mv "$tmp/.${file}.new" "$config_path/$file"
+                if ! ssh-keygen -Y verify -f "$tmp/.desnublado.pub" -I desnublado@release -n file -s "$tmp/.${file}.sig" < "$tmp/.${file}.new" > /dev/null; then
+                    error_msg "$(msg 'error_invalid_signature')"
+                    return 1
                 fi
+            fi
+
+            if [ "$file" = 'desnublado' ]; then
+                install_desnublado "$tmp/.${file}.new"
             else
-                error_msg "$(msg 'error_invalid_signature')"
-                return 1
+                mv "$tmp/.${file}.new" "$config_path/$file"
             fi
 
             rm -f "$tmp"/.desnublado.*
@@ -1151,7 +1155,7 @@ install_desnublado() {
     # allow to run setup to change settings after initial setup
     if [ "$src" != "$dst/desnublado" ]; then
         if mv "$src" "$dst/desnublado"; then
-            [ -z "${1:-}" ] && echo "${src##*/} -> $dst/desnublado"
+            [ -z "${1:-}" ] && echo -e "${src##*/} -> $dst/desnublado\n"
         fi
     fi
 
@@ -1259,9 +1263,7 @@ maybe_auto_update(){
     [ "$auto_update" = "false" ] && return
 
     if [ -f "$update_file" ]; then
-        days=$(( ($(date +%s) - $(stat -c %Y "$update_file")) / 86400 ))
-
-        if [ "$days" -ge 1 ]; then
+        if [ -n "$(find "$update_file" -mmin +1440 -type f -print -quit)" ]; then
             touch "$update_file"
             update_desnublado
             echo
@@ -1599,7 +1601,7 @@ select_lang(){
 
         if [ "$lang" = 'xx' ]; then
             unset 'lang_name[xx]';
-            update_translations || error_exit "$(msg 'error_download_translations')"
+            update_translations '--skip-verify' || error_exit "$(msg 'error_download_translations')"
             populate_langs
             select_lang_list
         fi
@@ -1744,6 +1746,8 @@ setup_desnublado() {
 
     if is_termux && ! ls "$HOME/storage/shared/DCIM" > /dev/null 2>&1; then
         msg 'termux_storage_info'
+        # give some time to read the message before launching the permission request
+        read -t 6 -n 3 -s
         termux-setup-storage
         echo
     fi

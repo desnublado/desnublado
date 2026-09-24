@@ -1257,7 +1257,6 @@ maybe_auto_update(){
 
     # uses global update_interval
 
-    local days
     local update_file="$config_path/desnublado.update_check"
 
     [ "$auto_update" = "false" ] && return

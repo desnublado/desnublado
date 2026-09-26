@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-readonly version="2026.09.22"
+readonly version="2026.09.26"
 
 # desnublado - A minimal microBKP implementation to run on device.
 # Created by solyplaya and released into the Public Domain. See footer for details.
@@ -754,24 +754,29 @@ get_datetime_from_filename() {
 
     local file="$1"
     local basename
-    local date_regex='.*([0-9]{8}_[0-9]{6})([0-9]{3}|[-_.][0-9]+)?.*$'
-    local datetime=""
-    local subsectime="000"
+    local date_regex='^(.*[^0-9])?([0-9]{4}[-_]?[0-9]{2}[-_]?[0-9]{2}[-_]?[0-9]{2}[-_]?[0-9]{2}[-_]?[0-9]{2})[-_]?([0-9]+)?.*$'
+    local datetime=''
+    local subsectime='000'
 
     basename="${file##*/}"
 
     if [[ $basename =~ $date_regex ]]; then
 
-        datetime="${BASH_REMATCH[1]}"
+        datetime="${BASH_REMATCH[2]}"
+
+        # remove possible date time separators
+        datetime="${BASH_REMATCH[2]//-/}"
+        datetime="${datetime//_/}"
+        datetime="${datetime//./}"
 
         # resort to meta subsectime first for suffixes like "_1"
-        if [[ -n "${BASH_REMATCH[2]}" && "${#BASH_REMATCH[2]}" -gt 2 ]]; then
-            subsectime="$(printf "%03d" "$(( 10#${BASH_REMATCH[2]#[-_.]} ))")"
+        if [[ -n "${BASH_REMATCH[3]}" && "${#BASH_REMATCH[3]}" -gt 2 ]]; then
+            subsectime="$(printf "%03d" "$(( 10#${BASH_REMATCH[3]} ))")"
         else
             subsectime="$(get_mstime "$file")"
         fi
 
-        datetime="$(printf "%s_%03d" "$datetime" "$(( 10#$subsectime ))")"
+        datetime="$(printf "%s_%s_%03d" "${datetime:0:8}" "${datetime:8:6}" "$(( 10#$subsectime ))")"
 
     fi
 
@@ -820,8 +825,8 @@ get_mstime() {
     local file="$1"
     local basename
     local subsectime
-    local ms_regex='.*[0-9]{8}_[0-9]{6}([0-9]{3}|[-_.][0-9]+).*$'
-    local mstime=""
+    local ms_regex='^(.*[^0-9])?([0-9]{4}[-_]?[0-9]{2}[-_]?[0-9]{2}[-_]?[0-9]{2}[-_]?[0-9]{2}[-_]?[0-9]{2})[-_]?([0-9]+)?.*$'
+    local mstime=''
 
     if is_image "$file"; then
         subsectime="$(exiftool -s -s -s -d "%Y%m%d_%H%M%S" -SubSecTimeOriginal -SubSecTime -SubSecTimeDigitized "$file" | head -n 1)"
@@ -848,8 +853,8 @@ get_mstime() {
 
         basename="${file##*/}"
 
-        if [[ $basename =~ $ms_regex ]]; then
-            mstime="$(( 10#${BASH_REMATCH[1]#[-_.]} ))"
+        if [[ $basename =~ $ms_regex  && -n "${BASH_REMATCH[3]}" ]]; then
+            mstime="$(( 10#${BASH_REMATCH[3]} ))"
         else
             mstime="000"
         fi
@@ -1746,7 +1751,7 @@ setup_desnublado() {
     if is_termux && ! ls "$HOME/storage/shared/DCIM" > /dev/null 2>&1; then
         msg 'termux_storage_info'
         # give some time to read the message before launching the permission request
-        read -t 6 -n 3 -s
+        read -t 6 -n 3 -s -r
         termux-setup-storage
         echo
     fi

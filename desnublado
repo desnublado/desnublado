@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-readonly version="2026.09.26"
+readonly version="2026.10.09"
 
 # desnublado - A minimal microBKP implementation to run on device.
 # Created by solyplaya and released into the Public Domain. See footer for details.
@@ -398,6 +398,7 @@ convert_video() {
     # Get duration in milliseconds from ffprobe (seconds.milliseconds)
     duration_d=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$file") || return 1
     duration_us="${duration_d/./}"
+    duration_us="${duration_d#0*}"
     duration_i="${duration_d%.*}"
     duration_d="${duration_d#*.}"
     duration_d="${duration_i}.${duration_d:0:1}" # seconds and 1st decimal

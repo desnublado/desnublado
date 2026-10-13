@@ -46,6 +46,7 @@ ext_list="${DNBL_EXT_LIST:-mp4 mkv jpg avif}"
 auto_update="${DNBL_AUTO_UPDATE:-false}"
 prefer_meta="${DNBL_PREFER_META:-false}"
 prefer_utc="${DNBL_PREFER_UTC:-false}"
+show_ratio="${DNBL_SHOW_RATIO:-false}"
 
 # non configurable globals
 hasher="xxh128sum"
@@ -593,7 +594,7 @@ edit_override() {
         ext_list)
             [[ $val =~ ^[[:space:]a-zA-Z0-9]+$ ]] && ok="true"
             ;;
-        auto_update|allow_dupes|date_rename|do_scroll|force_overwrite|move_sources|prefer_meta|prefer_utc|show_full_path)
+        auto_update|allow_dupes|date_rename|do_scroll|force_overwrite|move_sources|prefer_meta|prefer_utc|show_full_path|show_ratio)
             [[ "$val" = "true" || "$val" = "false" ]] && ok="true"
             ;;
         '')
@@ -1337,13 +1338,32 @@ print_file() {
 
     local file="$1"
     local base="$2"
+    local src_file="${3:-}"
     local filesize
     local filename
+    local extra=""
 
     [ "$show_full_path" = false ] && filename="${file/#$base\//}" || filename="$file"
     filesize="$(du -h "$file" | cut -f1)"
 
-    printf "%s\n" "$filename ($filesize)"
+    # we have a target call
+    if [ "$src_file" != "" ] && [ "$src_file" != "$file" ]; then
+
+        if [ "$move_sources" = true ]; then
+            src_file="${src_file/#$src/$src_done}"
+        fi
+
+        local src_bytes="$(du -b "$src_file" | cut -f1)"
+        local dst_bytes="$(du -b "$file" | cut -f1)"
+
+        if [[ -n "$src_bytes" && "$src_bytes" -gt 0 && -n "$dst_bytes" && "$dst_bytes" -gt 0 ]]; then
+            local ratio=$(( $src_bytes / $dst_bytes ))
+            extra=" 1/$ratio"
+        fi
+
+    fi
+
+    printf "%s\n" "$filename ($filesize)${extra}"
 
 }
 
@@ -1357,6 +1377,7 @@ process_sources() {
     local ok=0
     local total
     local file
+    local src_file=""
 
     # to track overall progress (x of y)
     total=$(find "$src" "${ext_params[@]}" | wc -l)
@@ -1463,9 +1484,10 @@ process_sources() {
             # keep original file mod time
             if [ -f "$target" ];then
                 (( ok++ ))
+                [ "$show_ratio" = true ] && src_file="$file"
                 touch -r "$file" "$target"
                 maybe_move_source "$file"
-                print_file "$target" "$dst"
+                print_file "$target" "$dst" "$src_file"
                 use_db && insert_target "$target" "$source_hash"
             fi
 

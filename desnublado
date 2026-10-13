@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-readonly version="2026.10.09"
+readonly version="2026.10.13"
 
 # desnublado - A minimal microBKP implementation to run on device.
 # Created by solyplaya and released into the Public Domain. See footer for details.

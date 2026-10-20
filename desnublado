@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-readonly version="2026.10.13"
+readonly version="2026.10.20"
 
 # desnublado - A minimal microBKP implementation to run on device.
 # Created by solyplaya and released into the Public Domain. See footer for details.
@@ -47,10 +47,12 @@ auto_update="${DNBL_AUTO_UPDATE:-false}"
 prefer_meta="${DNBL_PREFER_META:-false}"
 prefer_utc="${DNBL_PREFER_UTC:-false}"
 show_ratio="${DNBL_SHOW_RATIO:-false}"
+date_rename_sources="${DNBL_DATE_RENAME_SOURCES:-false}"
 
 # non configurable globals
 hasher="xxh128sum"
 source_hash=""
+source_datetime=""
 convert_return_code=0
 sys_tz=""
 allow_dynamic="false"
@@ -264,6 +266,9 @@ compute_hash() {
     local fs
     local cm=""
 
+    # if source_hash is already set, do nothing
+    [ -n "$source_hash" ] && return
+
     fs="$(du "$file" | cut -f1)"
 
     # show computing hash message only to files bigger than 25mb
@@ -281,6 +286,21 @@ compute_hash() {
         error_msg "$(msg 'calc_hash_error')"
         return 1
     fi
+
+}
+
+compute_hash_no_cache() {
+
+    local file="$1"
+    local tmp
+
+    tmp="$source_hash"
+    source_hash=""
+    compute_hash "$file"
+
+    printf "%s" "$source_hash"
+
+    source_hash="$tmp"
 
 }
 
@@ -594,7 +614,7 @@ edit_override() {
         ext_list)
             [[ $val =~ ^[[:space:]a-zA-Z0-9]+$ ]] && ok="true"
             ;;
-        auto_update|allow_dupes|date_rename|do_scroll|force_overwrite|move_sources|prefer_meta|prefer_utc|show_full_path|show_ratio)
+        auto_update|allow_dupes|date_rename|date_rename_sources|do_scroll|force_overwrite|move_sources|prefer_meta|prefer_utc|show_full_path|show_ratio)
             [[ "$val" = "true" || "$val" = "false" ]] && ok="true"
             ;;
         '')
@@ -899,7 +919,7 @@ get_sys_tz() {
 }
 
 get_unique_target() {
-    # uses global src, dst, date_rename, source_hash, prefer_meta
+    # uses global src, dst, date_rename, source_hash, prefer_meta, source_datetime
 
     local file="$1"
     local import_mode="$2"
@@ -919,7 +939,7 @@ get_unique_target() {
     target="${file/#$src/$dst}"
 
     if [ "$date_rename" = "true" ]; then
-        datetime="$(get_datetime "$file" "$prefer_meta")"
+        datetime="$source_datetime"
         target="${dst}/${datetime:0:4}/${datetime:4:2}/${datetime}.${ext}"
         idx="${datetime##*_}"
     else
@@ -1282,16 +1302,58 @@ maybe_auto_update(){
 
 maybe_move_source() {
 
+    # uses global source_hash source_datetime
+
     [ ! "$move_sources" = true ] && return
 
     local file="$1"
-    local target="${file/#$src/$src_done}"
+    local target
+
+    # if no date rename targets then I need to compute date...
+    if [ "$date_rename_sources" = "true" ]; then
+
+        local datetime
+        local ext
+        local idx
+
+        compute_hash "$file"
+
+        datetime="$source_datetime"
+        ext="${file##*.}"
+        ext="${ext,,}"
+        target="${src_done}/${datetime:0:4}/${datetime:4:2}/${datetime}.${ext}"
+        idx="${datetime##*_}"
+
+        while [ -f "$target" ]; do
+            # get existing file hash to compare if they have same filename and content
+
+            #@TODO add error control here (empty hash / file not readable)
+            # anyway empty hash would cause the loop to continue and try next idx suffixed filename
+            hash="$(compute_hash_no_cache "$target")"
+
+            # an empty source_hash skips the loop, so here we will always have a non empty source_hash
+            # existing file is from same source video
+            [[ "$hash" == "$source_hash" ]] && break
+
+            # ensure consistency by padding all files to 3 digits (ms or repeat index)
+            idx_pad=$(printf "%03d" "$idx")
+
+            # db-less approach to prevent duplicates and filename conflicts based on source hash
+            target="${src_done}/${datetime:0:4}/${datetime:4:2}/${datetime:0:15}_${idx_pad}.${ext}"
+            (( idx++ ))
+        done
+
+    else
+
+        target="${file/#$src/$src_done}"
+
+    fi
+
+    # If target exist we don't move the source
+    [ -f "$target" ] && return
 
     # make path for target
     [ ! -d "${target%/*}" ] && mkdir -p "${target%/*}"
-
-    # simple source exist skip
-    [ -f "$target" ] && return
 
     if ! mv "$file" "$target"; then
         error_msg "$(msg 'move_src_error')"
@@ -1353,11 +1415,13 @@ print_file() {
             src_file="${src_file/#$src/$src_done}"
         fi
 
-        local src_bytes="$(du -b "$src_file" | cut -f1)"
-        local dst_bytes="$(du -b "$file" | cut -f1)"
+        local src_bytes
+        local dst_bytes
+        src_bytes="$(du -b "$src_file" | cut -f1)"
+        dst_bytes="$(du -b "$file" | cut -f1)"
 
         if [[ -n "$src_bytes" && "$src_bytes" -gt 0 && -n "$dst_bytes" && "$dst_bytes" -gt 0 ]]; then
-            local ratio=$(( $src_bytes / $dst_bytes ))
+            local ratio=$(( src_bytes / dst_bytes ))
             extra=" 1/$ratio"
         fi
 
@@ -1387,6 +1451,7 @@ process_sources() {
 
         (( idx++ ))
         source_hash=""
+        source_datetime=""
 
         # skip empty source
         if [ ! -s "$file" ]; then
@@ -1409,6 +1474,8 @@ process_sources() {
         printf "%s\n" "[${idx}/${total}]"
         print_file "$file" "$src"
 
+        [[ "$date_rename" = true || "$date_rename_sources" = true ]] && source_datetime="$(get_datetime "$file" "$prefer_meta")"
+
         if [[ "$date_rename" = true || -n "$import_mode" || "$allow_dupes" = false ]]; then
             # when renaming targets, source_hash needs to be computed to check if target exists
             if ! compute_or_get_meta_hash "$file" "$import_mode"; then
@@ -1420,8 +1487,6 @@ process_sources() {
 
                 if [ -n "$import_mode" ]; then
                     rm "$file"
-                else
-                    maybe_move_source "$file"
                 fi
 
                 msg 'skip_existing_target'

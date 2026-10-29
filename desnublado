@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-readonly version="2026.10.20"
+readonly version="2026.10.29"
 
 # desnublado - A minimal microBKP implementation to run on device.
 # Created by solyplaya and released into the Public Domain. See footer for details.
@@ -76,6 +76,7 @@ declare -A messages
 # shellcheck disable=SC2034
 declare -A msg_en=(
     [aborted]="Execution aborted..."
+    [add_to_path]="Refresh your PATH variable now to access desnublado by running:\nsource $HOME/.profile"
     [allow_dupes]="Allow duplicate content files? (same photo/video with different file name)"
     [already_running]="Desnublado is already running. Exiting..."
     [ask_autostart]="Add this program to .bashrc so it starts automatically when you start %s? This is the recommended option if you installed %s only to use this program."
@@ -92,8 +93,9 @@ declare -A msg_en=(
     [default_setting]="(Default)"
     [disable]="Disable"
     [done]="Done!"
-    [done_install]="Installation is completed! You can pull down from the top of the screen to see the Termux notification and tap EXIT."
+    [done_install]="Installation is completed!"
     [done_termux]="You can type \"exit\" now. The next time you open %s it will start creating small versions of your photos and videos."
+    [done_termux_exit]="You can also pull down from the top of the screen to see the Termux notification and tap EXIT."
     [do_scroll]="Keep scrollable history of processed files? When disabled history is limited to what fits in the screen."
     [download_error]="Error downloading!"
     [downloading_ffmpeg]="Downloading ffmpeg..."
@@ -1095,11 +1097,12 @@ EOF
 install_deps() {
 
     local opt
-    local maybe_sudo_apt="sudo apt"
+    local maybe_sudo=""
     local maybe_ssh_keygen=""
     local do_keygen=""
 
     [ "${1:-}" = "ssh-keygen" ] && do_keygen="true"
+    [ "$(whoami 2>/dev/null)" != "root" ] && maybe_sudo="sudo"
 
     if [ "$interactive" = "true" ]; then
         msg 'install_required_packages'
@@ -1130,22 +1133,21 @@ install_deps() {
                 imagemagick \
                 sqlite \
                 xz-utils \
-                xxhash "$maybe_ssh_keygen"
+                xxhash $maybe_ssh_keygen
 
     elif is_apt_distro; then
 
-        [ "$(whoami 2>/dev/null)" = "root" ] && maybe_sudo_apt="apt"
         [ "$do_keygen" = "true" ] && maybe_ssh_keygen="openssh-client"
 
-        $maybe_sudo_apt update \
-            && DEBIAN_FRONTEND=noninteractive $maybe_sudo_apt upgrade -y -o Dpkg::Options::="--force-confnew" \
-            && DEBIAN_FRONTEND=noninteractive $maybe_sudo_apt install -y -o Dpkg::Options::="--force-confnew" \
+        $maybe_sudo apt update \
+            && DEBIAN_FRONTEND=noninteractive $maybe_sudo apt upgrade -y -o Dpkg::Options::="--force-confnew" \
+            && DEBIAN_FRONTEND=noninteractive $maybe_sudo apt install -y -o Dpkg::Options::="--force-confnew" \
                 curl \
                 exiftool \
                 imagemagick \
                 sqlite3 \
                 xz-utils \
-                xxhash "$maybe_ssh_keygen"
+                xxhash $maybe_ssh_keygen
 
         install_ffmpeg
 
@@ -1154,13 +1156,40 @@ install_deps() {
         [ "$do_keygen" = "true" ] && maybe_ssh_keygen="openssh-keygen"
 
         if [ "$(whoami 2>/dev/null)" = "root" ] || command -v "sudo" > /dev/null; then
-            apk add --no-cache bash coreutils curl exiftool ffmpeg imagemagick libavif libheif sqlite xxhash "$maybe_ssh_keygen"
+            $maybe_sudo apk add --no-cache bash coreutils curl exiftool ffmpeg imagemagick libavif libheif sqlite xxhash "$maybe_ssh_keygen"
         else
             msg 'no_sudo_command'
         fi
 
+    elif is_pacman_distro; then
+
+        [ "$do_keygen" = "true" ] && maybe_ssh_keygen="openssh"
+
+        if [ "$(whoami 2>/dev/null)" = "root" ] || command -v "sudo" > /dev/null; then
+            $maybe_sudo pacman -Sy --noconfirm && $maybe_sudo pacman -S --noconfirm curl exiftool ffmpeg imagemagick libavif libheif sqlite xxhash $maybe_ssh_keygen
+            [[ -f "/usr/bin/vendor_perl/exiftool" && ! -f "/usr/bin/exiftool" ]] && $maybe_sudo ln -s /usr/bin/vendor_perl/exiftool /usr/bin/exiftool
+        else
+            msg 'no_sudo_command'
+        fi
+
+    elif is_dnf_distro; then
+
+        [ "$do_keygen" = "true" ] && maybe_ssh_keygen="openssh"
+
+        if [ "$(whoami 2>/dev/null)" = "root" ] || command -v "sudo" > /dev/null; then
+            $maybe_sudo dnf install -y ffmpeg perl-Image-ExifTool ImageMagick ImageMagick-heic sqlite libavif libheif xxhash $maybe_ssh_keygen
+        else
+            msg 'no_sudo_command'
+        fi
+
+    elif is_brew_distro; then
+
+        [ "$do_keygen" = "true" ] && maybe_ssh_keygen="openssh"
+
+        brew update && brew install curl exiftool ffmpeg imagemagick sqlite xxhash $maybe_ssh_keygen
+
     else
-        # rpm based to be tested
+
         msg 'unsupported_distro'
 
     fi
@@ -1187,6 +1216,8 @@ install_desnublado() {
     fi
 
     [ -f "$dst/desnublado" ] && chmod +x "$dst/desnublado"
+
+    [[ ":$PATH:" != *":$dst:"* ]] && msg 'add_to_path'
 
 }
 
@@ -1226,6 +1257,18 @@ is_apt_distro() {
 
 }
 
+is_brew_distro() {
+
+    command -v "brew" &> /dev/null
+
+}
+
+is_dnf_distro() {
+
+    command -v "dnf" > /dev/null
+
+}
+
 is_image() {
 
     local ext="${1##*.}"
@@ -1236,6 +1279,12 @@ is_image() {
 is_lvm() {
 
     [[ "${USER:-}" = "droid" && -d "/mnt/shared/DCIM" ]]
+
+}
+
+is_pacman_distro() {
+
+    command -v "pacman" > /dev/null
 
 }
 
@@ -1855,8 +1904,11 @@ setup_desnublado() {
         install_autostart
     fi
 
-    echo
-    msg 'done_install'
+    if is_termux; then
+        msg 'done_termux_exit'
+    else
+        msg 'done_install'
+    fi
     echo
 
 }
